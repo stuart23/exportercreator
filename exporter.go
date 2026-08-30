@@ -19,8 +19,8 @@ import (
 	"go.uber.org/multierr"
 	"go.uber.org/zap"
 
-	"github.com/stuart23/exportercreator/internal/metadata"
 	"github.com/open-telemetry/opentelemetry-collector-contrib/extension/observer"
+	"github.com/stuart23/exportercreator/internal/metadata"
 )
 
 var (
@@ -41,6 +41,8 @@ type exporterCreator struct {
 	router           *telemetryRouter
 	telemetry        *metadata.TelemetryBuilder
 	defaultExporters map[component.ID]component.Component
+	// shared is the wrapper handed to every pipeline referencing this creator; see factory.go.
+	shared *sharedExporter
 }
 
 // host is an interface that the component.Host passed to exportercreator's Start function must implement
