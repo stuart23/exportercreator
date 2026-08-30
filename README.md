@@ -110,6 +110,36 @@ Each routing rule maps a resource attribute to an endpoint property:
 | `rule` | `string` | Expression that must evaluate to true for the exporter to be created |
 | `config` | `map[string]any` | Exporter configuration (supports endpoint value expansion) |
 | `resource_attributes` | `map[string]any` | Resource attributes to associate with this exporter |
+| `signals` | `map[string]bool` | Which signals this exporter handles. Omit to handle all three |
+
+#### Signals
+
+Omit `signals` and the exporter handles metrics, logs and traces. Provide it and it becomes an
+allowlist: **only the signals set to `true` are enabled, and any signal you leave out is
+disabled.**
+
+```yaml
+exporters:
+  otlp/metrics-only:
+    rule: type == "pod" && labels["otel-export"] == "true"
+    signals:
+      metrics: true
+    config:
+      endpoint: '`labels["collector-endpoint"]`'
+```
+
+Because unlisted signals are disabled rather than left alone, `signals` cannot be used to turn a
+single signal off: `signals: {logs: false}` disables all three, not just logs. To handle
+everything except logs, name what you want:
+
+```yaml
+    signals:
+      metrics: true
+      traces: true
+```
+
+A block that enables nothing is rejected at startup, as is an unrecognised signal name or a
+non-boolean value.
 
 ## Endpoint Value Expansion
 

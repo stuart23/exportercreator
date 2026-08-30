@@ -18,6 +18,8 @@ const (
 	exportersConfigKey = "exporters"
 	// configKey is the key name in a subexporter.
 	configKey = "config"
+	// signalsConfigKey is the key name of the optional signal selection in a subexporter.
+	signalsConfigKey = "signals"
 )
 
 // exporterConfig describes an exporter instance with a default config.
@@ -49,10 +51,9 @@ type exporterTemplate struct {
 	// ResourceAttributes is a map of resource attributes to associate with this exporter's endpoint.
 	// It can contain expr expressions for endpoint env value expansion.
 	ResourceAttributes map[string]any `mapstructure:"resource_attributes"`
-	// Signals specifies which signal types (logs, metrics, traces) this exporter should handle.
-	// If not specified, all signals are enabled by default.
-	Signals exporterSignals `mapstructure:"signals"`
-	rule    rule
+	rule               rule
+	// signals selects which signal types (logs, metrics, traces) this exporter handles.
+	// If the "signals" block is not specified, all signals are enabled by default.
 	signals exporterSignals
 }
 
@@ -160,13 +161,54 @@ func (cfg *Config) Unmarshal(componentParser *confmap.Conf) error {
 			}
 		}
 
-		// If Signals was configured, use it; otherwise use the default (all enabled)
-		if subexporter.Signals != (exporterSignals{}) {
-			subexporter.signals = subexporter.Signals
+		signals, configured, err := signalsFromConfig(subexporterSection)
+		if err != nil {
+			return fmt.Errorf("subexporter %q: %w", subexporterKey, err)
+		}
+		if configured {
+			subexporter.signals = signals
 		}
 
 		cfg.exporterTemplates[subexporterKey] = subexporter
 	}
 
 	return nil
+}
+
+// signalsFromConfig reads the optional "signals" block of a subexporter, reporting whether it
+// was present. Absence enables every signal, so it has to be distinguished from a block that
+// disables every signal - the two are identical once parsed into exporterSignals.
+func signalsFromConfig(section *confmap.Conf) (exporterSignals, bool, error) {
+	raw, ok := section.ToStringMap()[signalsConfigKey]
+	if !ok {
+		return exporterSignals{}, false, nil
+	}
+	values, ok := raw.(map[string]any)
+	if !ok {
+		return exporterSignals{}, true, fmt.Errorf("%q must be a map, got %T", signalsConfigKey, raw)
+	}
+
+	var signals exporterSignals
+	for key, value := range values {
+		enabled, err := cast.ToBoolE(value)
+		if err != nil {
+			return exporterSignals{}, true, fmt.Errorf("%q value for %q must be a boolean: %w", signalsConfigKey, key, err)
+		}
+		switch key {
+		case "metrics":
+			signals.metrics = enabled
+		case "logs":
+			signals.logs = enabled
+		case "traces":
+			signals.traces = enabled
+		default:
+			return exporterSignals{}, true, fmt.Errorf("unknown %q key %q", signalsConfigKey, key)
+		}
+	}
+	// Every signal disabled would be accepted here and then fail in the runner once per
+	// matching endpoint, forever. Reject it at config time instead.
+	if signals == (exporterSignals{}) {
+		return exporterSignals{}, true, fmt.Errorf("%q must enable at least one of metrics, logs or traces", signalsConfigKey)
+	}
+	return signals, true, nil
 }
