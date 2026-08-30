@@ -84,3 +84,32 @@ func TestConfig_SignalsRejectsNonMap(t *testing.T) {
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "must be a map")
 }
+
+// An absent exporters section is a valid configuration.
+func TestConfig_NoExportersSectionIsValid(t *testing.T) {
+	cfg := createDefaultConfig().(*Config)
+	require.NoError(t, cfg.Unmarshal(confmap.NewFromStringMap(map[string]any{
+		"watch_observers": []any{"k8s_observer"},
+	})))
+	assert.Empty(t, cfg.exporterTemplates)
+}
+
+// An empty exporters section is a valid configuration.
+func TestConfig_EmptyExportersSectionIsValid(t *testing.T) {
+	cfg := createDefaultConfig().(*Config)
+	require.NoError(t, cfg.Unmarshal(confmap.NewFromStringMap(map[string]any{
+		"exporters": map[string]any{},
+	})))
+	assert.Empty(t, cfg.exporterTemplates)
+}
+
+// A malformed exporters section must be reported rather than silently ignored, which would
+// start the collector with no subexporters and no indication why.
+func TestConfig_MalformedExportersSectionErrors(t *testing.T) {
+	cfg := createDefaultConfig().(*Config)
+	err := cfg.Unmarshal(confmap.NewFromStringMap(map[string]any{
+		"exporters": "otlp/test",
+	}))
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "exporters")
+}

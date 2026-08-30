@@ -128,10 +128,11 @@ func (cfg *Config) Unmarshal(componentParser *confmap.Conf) error {
 		}
 	}
 
+	// Sub returns an empty Conf and no error when the key is absent, so configuring no
+	// exporters remains valid; an error here means the section is present but malformed.
 	exportersCfg, err := componentParser.Sub(exportersConfigKey)
 	if err != nil {
-		// No exporters configured is valid
-		return nil
+		return fmt.Errorf("unable to extract key %v: %w", exportersConfigKey, err)
 	}
 
 	for subexporterKey := range exportersCfg.ToStringMap() {
