@@ -40,6 +40,15 @@ func (oh *observerHandler) ID() observer.NotifyID {
 	return observer.NotifyID(oh.params.ID.String())
 }
 
+// endpointTypeOf names the kind of resource an endpoint describes, for logs and metrics.
+// Details is optional on an Endpoint, so it is not always known.
+func endpointTypeOf(e observer.Endpoint) string {
+	if e.Details == nil {
+		return "unknown"
+	}
+	return string(e.Details.Type())
+}
+
 // OnAdd responds to endpoint add notifications.
 func (oh *observerHandler) OnAdd(added []observer.Endpoint) {
 	oh.Lock()
@@ -50,10 +59,7 @@ func (oh *observerHandler) OnAdd(added []observer.Endpoint) {
 // onAddLocked handles OnAdd while oh's mutex is already held.
 func (oh *observerHandler) onAddLocked(added []observer.Endpoint) {
 	for _, e := range added {
-		endpointType := "unknown"
-		if e.Details != nil {
-			endpointType = string(e.Details.Type())
-		}
+		endpointType := endpointTypeOf(e)
 		oh.params.Logger.Info("observed resource added",
 			zap.String("endpoint_id", string(e.ID)),
 			zap.String("endpoint_target", e.Target),
@@ -100,10 +106,7 @@ func (oh *observerHandler) OnRemove(removed []observer.Endpoint) {
 // onRemoveLocked handles OnRemove while oh's mutex is already held.
 func (oh *observerHandler) onRemoveLocked(removed []observer.Endpoint) {
 	for _, e := range removed {
-		endpointType := "unknown"
-		if e.Details != nil {
-			endpointType = string(e.Details.Type())
-		}
+		endpointType := endpointTypeOf(e)
 		oh.params.Logger.Info("observed resource removed",
 			zap.String("endpoint_id", string(e.ID)),
 			zap.String("endpoint_target", e.Target),
@@ -137,10 +140,7 @@ func (oh *observerHandler) OnChange(changed []observer.Endpoint) {
 	defer oh.Unlock()
 
 	for _, e := range changed {
-		endpointType := "unknown"
-		if e.Details != nil {
-			endpointType = string(e.Details.Type())
-		}
+		endpointType := endpointTypeOf(e)
 		oh.params.Logger.Info("observed resource updated",
 			zap.String("endpoint_id", string(e.ID)),
 			zap.String("endpoint_target", e.Target),
@@ -274,7 +274,7 @@ func (oh *observerHandler) startExporter(template exporterTemplate, env observer
 		}
 	}
 
-	oh.router.AddExporter(e.ID, exporterInstance, routingEnv)
+	oh.router.AddExporter(e.ID, exporterInstance, routingEnv, template.id.Type().String())
 
 	// Debug log the routing properties for this exporter
 	if ce := oh.params.Logger.Check(zap.DebugLevel, "exporter registered with routing properties"); ce != nil {

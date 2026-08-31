@@ -30,6 +30,7 @@ type TelemetryBuilder struct {
 	ExporterCreatorNonroutableLogRecordsTotal   metric.Int64Counter
 	ExporterCreatorNonroutableMetricPointsTotal metric.Int64Counter
 	ExporterCreatorNonroutableSpansTotal        metric.Int64Counter
+	ExporterCreatorObservedEndpoints            metric.Int64Gauge
 }
 
 // TelemetryBuilderOption applies changes to default builder.
@@ -83,6 +84,12 @@ func NewTelemetryBuilder(settings component.TelemetrySettings, options ...Teleme
 		"otelcol_exporter_creator_nonroutable_spans_total",
 		metric.WithDescription("Total number of spans that could not be routed to any exporter. [Development]"),
 		metric.WithUnit("{spans}"),
+	)
+	errs = errors.Join(errs, err)
+	builder.ExporterCreatorObservedEndpoints, err = builder.meter.Int64Gauge(
+		"otelcol_exporter_creator_observed_endpoints",
+		metric.WithDescription("Current number of endpoints reported by the observers being watched. [Development]"),
+		metric.WithUnit("{endpoints}"),
 	)
 	errs = errors.Join(errs, err)
 	return &builder, errs

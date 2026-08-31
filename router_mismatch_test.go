@@ -11,8 +11,8 @@ import (
 	"go.opentelemetry.io/collector/component/componenttest"
 	"go.opentelemetry.io/collector/pdata/pcommon"
 
-	"github.com/stuart23/exportercreator/internal/metadata"
 	"github.com/open-telemetry/opentelemetry-collector-contrib/extension/observer"
+	"github.com/stuart23/exportercreator/internal/metadata"
 )
 
 // TestTelemetryRouter_Route_MismatchedGenerator verifies that metrics with a generator
@@ -40,7 +40,7 @@ func TestTelemetryRouter_Route_MismatchedGenerator(t *testing.T) {
 	}
 
 	mockExporter := &nopExporter{}
-	router.AddExporter(observer.EndpointID("crd-alpha"), mockExporter, observer.EndpointEnv(properties))
+	router.AddExporter(observer.EndpointID("crd-alpha"), mockExporter, observer.EndpointEnv(properties), "otlp")
 
 	// Test 1: Metric with generator="alpha" should match
 	resourceAttrs1 := pcommon.NewMap()
@@ -100,8 +100,8 @@ func TestTelemetryRouter_Route_MultipleCRDs(t *testing.T) {
 
 	mockExporterAlpha := &nopExporter{}
 	mockExporterBeta := &nopExporter{}
-	router.AddExporter(observer.EndpointID("crd-alpha"), mockExporterAlpha, observer.EndpointEnv(propertiesAlpha))
-	router.AddExporter(observer.EndpointID("crd-beta"), mockExporterBeta, observer.EndpointEnv(propertiesBeta))
+	router.AddExporter(observer.EndpointID("crd-alpha"), mockExporterAlpha, observer.EndpointEnv(propertiesAlpha), "otlp")
+	router.AddExporter(observer.EndpointID("crd-beta"), mockExporterBeta, observer.EndpointEnv(propertiesBeta), "otlp")
 
 	// Test: Metric with generator="alpha" should only match alpha exporter
 	resourceAttrs1 := pcommon.NewMap()
@@ -180,7 +180,7 @@ func TestTelemetryRouter_Route_NoRules(t *testing.T) {
 		},
 	}
 	mockExporter := &nopExporter{}
-	router.AddExporter(observer.EndpointID("crd-alpha"), mockExporter, observer.EndpointEnv(properties))
+	router.AddExporter(observer.EndpointID("crd-alpha"), mockExporter, observer.EndpointEnv(properties), "otlp")
 
 	// Test: Even with matching attributes, no exporters should be matched when no rules are configured
 	resourceAttrs := pcommon.NewMap()

@@ -32,7 +32,7 @@ func metricsOnlyCreator(t *testing.T, tt *componenttest.Telemetry) *exporterCrea
 	ec, err := newExporterCreator(metadatatest.NewSettings(tt), cfg)
 	require.NoError(t, err)
 	ec.router.AddExporter("prw-endpoint", &wrappedExporter{metrics: &nopExporter{}},
-		observer.EndpointEnv{"labels": map[string]string{"service": "svc"}})
+		observer.EndpointEnv{"labels": map[string]string{"service": "svc"}}, "otlp")
 	return ec
 }
 
@@ -83,7 +83,7 @@ func TestUnsupportedSignal_MetricPointsAreCounted(t *testing.T) {
 	ec, err := newExporterCreator(metadatatest.NewSettings(tt), cfg)
 	require.NoError(t, err)
 	ec.router.AddExporter("logs-endpoint", &wrappedExporter{logs: &nopExporter{}},
-		observer.EndpointEnv{"labels": map[string]string{"service": "svc"}})
+		observer.EndpointEnv{"labels": map[string]string{"service": "svc"}}, "otlp")
 
 	md := pmetric.NewMetrics()
 	rm := md.ResourceMetrics().AppendEmpty()
@@ -108,7 +108,7 @@ func TestUnsupportedSignal_WarnsOncePerExporter(t *testing.T) {
 	ec, err := newExporterCreator(params, cfg)
 	require.NoError(t, err)
 	ec.router.AddExporter("prw-endpoint", &wrappedExporter{metrics: &nopExporter{}},
-		observer.EndpointEnv{"labels": map[string]string{"service": "svc"}})
+		observer.EndpointEnv{"labels": map[string]string{"service": "svc"}}, "otlp")
 
 	for i := 0; i < 10; i++ {
 		require.NoError(t, ec.ConsumeLogs(context.Background(), matchingLogs()))
@@ -130,8 +130,8 @@ func TestUnsupportedSignal_NotCountedWhenAnotherExporterAccepts(t *testing.T) {
 	ec, err := newExporterCreator(metadatatest.NewSettings(tt), cfg)
 	require.NoError(t, err)
 	env := observer.EndpointEnv{"labels": map[string]string{"service": "svc"}}
-	ec.router.AddExporter("metrics-only", &wrappedExporter{metrics: &nopExporter{}}, env)
-	ec.router.AddExporter("logs-capable", &wrappedExporter{logs: &nopExporter{}}, env)
+	ec.router.AddExporter("metrics-only", &wrappedExporter{metrics: &nopExporter{}}, env, "otlp")
+	ec.router.AddExporter("logs-capable", &wrappedExporter{logs: &nopExporter{}}, env, "otlp")
 
 	require.NoError(t, ec.ConsumeLogs(context.Background(), matchingLogs()))
 
@@ -151,7 +151,7 @@ func TestUnsupportedSignal_MixedBatchCountsBothLosses(t *testing.T) {
 	// Logs-only, so metrics matching it are dropped for an unhandled signal. No default
 	// exporters are configured, so whatever matches nothing is dropped too.
 	ec.router.AddExporter("logs-endpoint", &wrappedExporter{logs: &nopExporter{}},
-		observer.EndpointEnv{"labels": map[string]string{"service": "svc"}})
+		observer.EndpointEnv{"labels": map[string]string{"service": "svc"}}, "otlp")
 
 	md := pmetric.NewMetrics()
 	// Two points that match the logs-only exporter and cannot be handled by it.
@@ -186,7 +186,7 @@ func TestUnsupportedSignal_WarningIdentifiesTheExporter(t *testing.T) {
 
 	id := component.MustNewIDWithName("otlp", `prw/0/otlp{endpoint="localhost:9090"}/prw-endpoint`)
 	ec.router.AddExporter("prw-endpoint", &wrappedExporter{id: id, metrics: &nopExporter{}},
-		observer.EndpointEnv{"labels": map[string]string{"service": "svc"}})
+		observer.EndpointEnv{"labels": map[string]string{"service": "svc"}}, "otlp")
 
 	require.NoError(t, ec.ConsumeLogs(context.Background(), matchingLogs()))
 

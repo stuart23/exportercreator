@@ -37,7 +37,7 @@ func TestTelemetryRouter_AddExporter(t *testing.T) {
 		},
 	}
 
-	router.AddExporter(observer.EndpointID("endpoint-1"), mockExporter, env)
+	router.AddExporter(observer.EndpointID("endpoint-1"), mockExporter, env, "otlp")
 
 	assert.Equal(t, 1, router.Count())
 }
@@ -54,7 +54,7 @@ func TestTelemetryRouter_RemoveExporter(t *testing.T) {
 		},
 	}
 
-	router.AddExporter(observer.EndpointID("endpoint-1"), mockExporter, env)
+	router.AddExporter(observer.EndpointID("endpoint-1"), mockExporter, env, "otlp")
 	assert.Equal(t, 1, router.Count())
 
 	router.RemoveExporter(observer.EndpointID("endpoint-1"))
@@ -79,7 +79,7 @@ func TestTelemetryRouter_Route(t *testing.T) {
 		},
 	}
 
-	router.AddExporter(observer.EndpointID("endpoint-1"), mockExporter, env)
+	router.AddExporter(observer.EndpointID("endpoint-1"), mockExporter, env, "otlp")
 
 	resourceAttrs := pcommon.NewMap()
 	resourceAttrs.PutStr("app", "test")
@@ -240,7 +240,7 @@ func TestTelemetryRouter_Route_WithCRDSpec(t *testing.T) {
 		},
 	}
 
-	router.AddExporter(observer.EndpointID("endpoint-1"), mockExporter, env)
+	router.AddExporter(observer.EndpointID("endpoint-1"), mockExporter, env, "otlp")
 
 	// Test matching resource attributes
 	resourceAttrs := pcommon.NewMap()
@@ -286,7 +286,7 @@ func TestTelemetryRouter_RouteConcurrentWithEndpointChurn(t *testing.T) {
 		env := observer.EndpointEnv{"labels": map[string]string{"app": "test"}}
 		for i := 0; i < iterations; i++ {
 			id := observer.EndpointID(fmt.Sprintf("endpoint-%d", i))
-			router.AddExporter(id, &nopExporterComponent{}, env)
+			router.AddExporter(id, &nopExporterComponent{}, env, "otlp")
 			router.RemoveExporter(id)
 		}
 	}()
@@ -324,11 +324,11 @@ func TestTelemetryRouter_CachedCountMatchesExporters(t *testing.T) {
 	requireConsistent(0, "construction")
 
 	// Two exporters under one endpoint: the remove has to subtract both, not one.
-	router.AddExporter(a, &nopExporterComponent{}, env)
-	router.AddExporter(a, &nopExporterComponent{}, env)
+	router.AddExporter(a, &nopExporterComponent{}, env, "otlp")
+	router.AddExporter(a, &nopExporterComponent{}, env, "otlp")
 	requireConsistent(2, "two exporters on one endpoint")
 
-	router.AddExporter(b, &nopExporterComponent{}, env)
+	router.AddExporter(b, &nopExporterComponent{}, env, "otlp")
 	requireConsistent(3, "a second endpoint")
 
 	router.RemoveExporter(a)

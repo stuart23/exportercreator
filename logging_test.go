@@ -89,7 +89,7 @@ func TestRoute_SingleExporterDoesNotWarn(t *testing.T) {
 	router.setLogger(params.Logger)
 	router.AddExporter("endpoint-1", &nopExporterComponent{}, map[string]any{
 		"labels": map[string]string{"app": "test"},
-	})
+	}, "otlp")
 
 	attrs := pmetric.NewMetrics().ResourceMetrics().AppendEmpty().Resource().Attributes()
 	attrs.PutStr("app", "test")

@@ -34,7 +34,7 @@ func TestRoute_DoesNotReacquireItsOwnLock(t *testing.T) {
 	router.setLogger(zap.New(core))
 
 	env := obs.EndpointEnv{"labels": map[string]string{"app": "test"}}
-	router.AddExporter("seed", &nopExporterComponent{}, env)
+	router.AddExporter("seed", &nopExporterComponent{}, env, "otlp")
 
 	attrs := pmetric.NewMetrics().ResourceMetrics().AppendEmpty().Resource().Attributes()
 	attrs.PutStr("app", "test")
@@ -60,7 +60,7 @@ func TestRoute_DoesNotReacquireItsOwnLock(t *testing.T) {
 				defer wg.Done()
 				id := obs.EndpointID(string(rune('a' + i)))
 				for j := 0; j < 2000; j++ {
-					router.AddExporter(id, &nopExporterComponent{}, env)
+					router.AddExporter(id, &nopExporterComponent{}, env, "otlp")
 					router.RemoveExporter(id)
 				}
 			}(i)

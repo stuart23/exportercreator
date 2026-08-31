@@ -23,6 +23,7 @@ func TestSetupTelemetry(t *testing.T) {
 	tb.ExporterCreatorNonroutableLogRecordsTotal.Add(context.Background(), 1)
 	tb.ExporterCreatorNonroutableMetricPointsTotal.Add(context.Background(), 1)
 	tb.ExporterCreatorNonroutableSpansTotal.Add(context.Background(), 1)
+	tb.ExporterCreatorObservedEndpoints.Record(context.Background(), 1)
 	AssertEqualExporterCreatorExportersCount(t, testTel,
 		[]metricdata.DataPoint[int64]{{Value: 1}},
 		metricdatatest.IgnoreTimestamp())
@@ -33,6 +34,9 @@ func TestSetupTelemetry(t *testing.T) {
 		[]metricdata.DataPoint[int64]{{Value: 1}},
 		metricdatatest.IgnoreTimestamp())
 	AssertEqualExporterCreatorNonroutableSpansTotal(t, testTel,
+		[]metricdata.DataPoint[int64]{{Value: 1}},
+		metricdatatest.IgnoreTimestamp())
+	AssertEqualExporterCreatorObservedEndpoints(t, testTel,
 		[]metricdata.DataPoint[int64]{{Value: 1}},
 		metricdatatest.IgnoreTimestamp())
 

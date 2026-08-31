@@ -16,8 +16,8 @@ import (
 	"go.opentelemetry.io/collector/pdata/pmetric"
 	"go.opentelemetry.io/collector/pdata/ptrace"
 
-	"github.com/stuart23/exportercreator/internal/metadata"
 	"github.com/open-telemetry/opentelemetry-collector-contrib/extension/observer"
+	"github.com/stuart23/exportercreator/internal/metadata"
 )
 
 // TestExporterCreator_ConsumeMetrics_WithWrappedExporter verifies that metrics are actually
@@ -82,7 +82,7 @@ func TestExporterCreator_ConsumeMetrics_WithWrappedExporter(t *testing.T) {
 		"type":   "k8s.crd",
 		"labels": map[string]string{"service": "test-service"},
 	}
-	ec.router.AddExporter(observer.EndpointID("test-endpoint"), wrappedExp, env)
+	ec.router.AddExporter(observer.EndpointID("test-endpoint"), wrappedExp, env, "otlp")
 
 	// Create metrics with matching resource attributes
 	metrics := pmetric.NewMetrics()
@@ -156,7 +156,7 @@ func TestExporterCreator_ConsumeLogs_WithWrappedExporter(t *testing.T) {
 		"type":   "k8s.crd",
 		"labels": map[string]string{"service": "test-service"},
 	}
-	ec.router.AddExporter(observer.EndpointID("test-endpoint"), wrappedExp, env)
+	ec.router.AddExporter(observer.EndpointID("test-endpoint"), wrappedExp, env, "otlp")
 
 	logs := plog.NewLogs()
 	rl := logs.ResourceLogs().AppendEmpty()
@@ -219,7 +219,7 @@ func TestExporterCreator_ConsumeTraces_WithWrappedExporter(t *testing.T) {
 		"type":   "k8s.crd",
 		"labels": map[string]string{"service": "test-service"},
 	}
-	ec.router.AddExporter(observer.EndpointID("test-endpoint"), wrappedExp, env)
+	ec.router.AddExporter(observer.EndpointID("test-endpoint"), wrappedExp, env, "otlp")
 
 	traces := ptrace.NewTraces()
 	rs := traces.ResourceSpans().AppendEmpty()

@@ -158,6 +158,23 @@ a warning once per signal.
 To avoid the drop, route only the signals your templates handle through `exporter_creator`, or
 give the endpoint an exporter template that covers them.
 
+### Discovery and exporter metrics
+
+Two gauges describe what discovery is producing. Both are broken down by attribute, so summing
+across the attribute gives the overall total.
+
+`otelcol_exporter_creator_observed_endpoints` is how many endpoints each watched observer
+currently reports, by `observer_type` (the extension named in `watch_observers`) and
+`endpoint_type` (`pod`, `port`, `hostport`, `container`, ...).
+
+`otelcol_exporter_creator_exporters_count` is how many exporters are currently registered for
+routing, by `exporter_type` - the type of the template each was built from, such as `otlp` or
+`prometheusremotewrite`. One endpoint matching several templates counts once against each.
+
+Read together they show whether discovery is reaching the resources you expect and whether
+those resources are turning into exporters: endpoints observed but no exporters of the type you
+configured means the templates' rules are not matching what the observer found.
+
 ## Endpoint Value Expansion
 
 Configuration values can reference endpoint properties using backtick expressions:

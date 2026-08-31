@@ -239,9 +239,9 @@ func TestObserverHandler_OnAdd_EndpointExpandsToEmpty(t *testing.T) {
 
 type mockRunner struct {
 	startedComponent   component.Component
-	startedComponents   []component.Component
+	startedComponents  []component.Component
 	shutdownComponent  component.Component
-	shutdownComponents  []component.Component
+	shutdownComponents []component.Component
 	lastError          error
 }
 
@@ -272,7 +272,7 @@ type nopExporter struct {
 var (
 	_ exporter.Logs    = (*nopExporter)(nil)
 	_ exporter.Metrics = (*nopExporter)(nil)
-	_ exporter.Traces   = (*nopExporter)(nil)
+	_ exporter.Traces  = (*nopExporter)(nil)
 )
 
 func (n *nopExporter) Start(ctx context.Context, host component.Host) error {
