@@ -429,13 +429,16 @@ func (ec *exporterCreator) ConsumeMetrics(ctx context.Context, md pmetric.Metric
 			}
 			// If no default exporter supports metrics, or export failed, count all unmatched as non-routable
 			if !hasMetricsExporter || !exportSucceeded {
-				nonRoutableCount = countMetricPoints(unmatchedMetrics)
+				unmatchedCount := countMetricPoints(unmatchedMetrics)
+				// Added, not assigned: a batch can carry both points no matched exporter
+				// could take and points nothing matched at all, and both are lost.
+				nonRoutableCount += unmatchedCount
 				// Counted by the non-routable metric; a failed export is separately returned
 				// to the pipeline as an error. Detail here is debug-only to stay off the
 				// per-batch log path.
 				if debug {
 					logger.Debug("unmatched metrics could not be sent to a default exporter",
-						zap.Int64("non_routable_count", nonRoutableCount),
+						zap.Int64("unmatched_metric_points", unmatchedCount),
 						zap.Bool("has_metrics_exporter", hasMetricsExporter),
 						zap.Bool("export_succeeded", exportSucceeded),
 					)
@@ -444,10 +447,11 @@ func (ec *exporterCreator) ConsumeMetrics(ctx context.Context, md pmetric.Metric
 		} else {
 			// No default exporters configured, count all unmatched as non-routable. This is a
 			// valid configuration, so it is reported by the non-routable metric rather than a log.
-			nonRoutableCount = countMetricPoints(unmatchedMetrics)
+			unmatchedCount := countMetricPoints(unmatchedMetrics)
+			nonRoutableCount += unmatchedCount
 			if debug {
 				logger.Debug("counting unmatched metrics as non-routable (no default exporters configured)",
-					zap.Int64("non_routable_count", nonRoutableCount),
+					zap.Int64("unmatched_metric_points", unmatchedCount),
 				)
 			}
 		}
@@ -605,7 +609,7 @@ func (ec *exporterCreator) warnUnsupportedSignal(exp component.Component, signal
 	}
 	ec.params.Logger.Warn("matched exporter does not handle this signal, dropping telemetry",
 		zap.String("signal", signal),
-		zap.String("exporter_type", fmt.Sprintf("%T", exp)),
+		zap.String("exporter", we.id.String()),
 	)
 }
 

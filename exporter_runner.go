@@ -72,7 +72,7 @@ func (run *exporterRunner) start(
 	// Sets dynamically created exporter to something like exporter_creator/1/otlp{endpoint="localhost:4317"}/<EndpointID>.
 	id := component.NewIDWithName(factory.Type(), fmt.Sprintf("%s/%s{endpoint=%q}/%s", exporterCfg.id.Name(), run.idNamespace, targetEndpoint, exporterCfg.endpointID))
 
-	we := &wrappedExporter{}
+	we := &wrappedExporter{id: id}
 	var createError error
 
 	// Create exporter instances only for enabled signals
@@ -237,6 +237,10 @@ func (run *exporterRunner) createTracesRuntimeExporter(
 var _ component.Component = (*wrappedExporter)(nil)
 
 type wrappedExporter struct {
+	// id is the runtime exporter's component ID, naming both the template it came from and
+	// the endpoint it was created for. It is what identifies this exporter in a log; the Go
+	// type is the same for every one of them.
+	id      component.ID
 	logs    exp.Logs
 	metrics exp.Metrics
 	traces  exp.Traces

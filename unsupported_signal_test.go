@@ -9,6 +9,7 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"go.opentelemetry.io/collector/component"
 	"go.opentelemetry.io/collector/component/componenttest"
 	"go.opentelemetry.io/collector/pdata/plog"
 	"go.opentelemetry.io/collector/pdata/pmetric"
@@ -136,4 +137,61 @@ func TestUnsupportedSignal_NotCountedWhenAnotherExporterAccepts(t *testing.T) {
 
 	_, err = tt.GetMetric("otelcol_exporter_creator_nonroutable_log_records_total")
 	require.Error(t, err, "nothing should be counted when a matched exporter accepted the logs")
+}
+
+// A batch can carry both metric points a matched exporter could not take and points that
+// matched nothing at all. The unmatched tally used to be assigned over the unsupported-signal
+// one rather than added to it, so a batch containing both reported only the unmatched half.
+func TestUnsupportedSignal_MixedBatchCountsBothLosses(t *testing.T) {
+	tt := componenttest.NewTelemetry()
+	cfg := createDefaultConfig().(*Config)
+	cfg.Routing.Rules = []RoutingRule{{ResourceAttribute: "service.name", EndpointProperty: "labels.service"}}
+	ec, err := newExporterCreator(metadatatest.NewSettings(tt), cfg)
+	require.NoError(t, err)
+	// Logs-only, so metrics matching it are dropped for an unhandled signal. No default
+	// exporters are configured, so whatever matches nothing is dropped too.
+	ec.router.AddExporter("logs-endpoint", &wrappedExporter{logs: &nopExporter{}},
+		observer.EndpointEnv{"labels": map[string]string{"service": "svc"}})
+
+	md := pmetric.NewMetrics()
+	// Two points that match the logs-only exporter and cannot be handled by it.
+	matched := md.ResourceMetrics().AppendEmpty()
+	matched.Resource().Attributes().PutStr("service.name", "svc")
+	g := matched.ScopeMetrics().AppendEmpty().Metrics().AppendEmpty()
+	g.SetName("m")
+	g.SetEmptyGauge().DataPoints().AppendEmpty().SetIntValue(1)
+	g.Gauge().DataPoints().AppendEmpty().SetIntValue(2)
+	// One point matching no rule at all.
+	unmatched := md.ResourceMetrics().AppendEmpty()
+	unmatched.Resource().Attributes().PutStr("service.name", "nobody")
+	u := unmatched.ScopeMetrics().AppendEmpty().Metrics().AppendEmpty()
+	u.SetName("u")
+	u.SetEmptyGauge().DataPoints().AppendEmpty().SetIntValue(3)
+
+	require.NoError(t, ec.ConsumeMetrics(context.Background(), md))
+
+	metadatatest.AssertEqualExporterCreatorNonroutableMetricPointsTotal(t, tt,
+		[]metricdata.DataPoint[int64]{{Value: 3}}, metricdatatest.IgnoreTimestamp())
+}
+
+// The warning has to name the exporter that could not take the signal. Every runtime exporter
+// is the same Go type, so logging the type identifies nothing; the component ID carries both
+// the template it came from and the endpoint it was created for.
+func TestUnsupportedSignal_WarningIdentifiesTheExporter(t *testing.T) {
+	params, logs := newObservedSettings(zapcore.WarnLevel)
+	cfg := createDefaultConfig().(*Config)
+	cfg.Routing.Rules = []RoutingRule{{ResourceAttribute: "service.name", EndpointProperty: "labels.service"}}
+	ec, err := newExporterCreator(params, cfg)
+	require.NoError(t, err)
+
+	id := component.MustNewIDWithName("otlp", `prw/0/otlp{endpoint="localhost:9090"}/prw-endpoint`)
+	ec.router.AddExporter("prw-endpoint", &wrappedExporter{id: id, metrics: &nopExporter{}},
+		observer.EndpointEnv{"labels": map[string]string{"service": "svc"}})
+
+	require.NoError(t, ec.ConsumeLogs(context.Background(), matchingLogs()))
+
+	warns := logs.FilterMessage("matched exporter does not handle this signal, dropping telemetry").All()
+	require.Len(t, warns, 1)
+	assert.Equal(t, id.String(), warns[0].ContextMap()["exporter"],
+		"the warning must name which exporter dropped the telemetry")
 }
