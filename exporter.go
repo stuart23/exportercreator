@@ -600,8 +600,10 @@ func attrsToMap(attrs pcommon.Map) map[string]string {
 }
 
 // warnUnsupportedSignal reports, once per exporter and signal, that telemetry matched an
-// exporter which cannot handle it. The telemetry is counted as non-routable either way; the
-// warning names the exporter so the mismatch can be traced back to a template.
+// exporter which cannot handle it. Whether that telemetry is then counted as non-routable
+// depends on the other exporters it matched: it is only lost, and only counted, when none of
+// them accepted it. The warning names the exporter so the mismatch can be traced back to a
+// template.
 func (ec *exporterCreator) warnUnsupportedSignal(exp component.Component, signal string) {
 	we, ok := exp.(*wrappedExporter)
 	if !ok || !we.firstUnsupported(signal) {
