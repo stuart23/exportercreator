@@ -26,8 +26,8 @@ Add the module under `exporters` in `builder-config.yaml` (use a real version ta
 
 ```yaml
 exporters:
-  - gomod: go.opentelemetry.io/collector/exporter/debugexporter v0.147.0
-  - gomod: go.opentelemetry.io/collector/exporter/otlpexporter v0.147.0
+  - gomod: go.opentelemetry.io/collector/exporter/debugexporter v0.151.0
+  - gomod: go.opentelemetry.io/collector/exporter/otlpexporter v0.151.0
   - gomod: github.com/stuart23/exportercreator v0.1.0
 ```
 
@@ -185,9 +185,10 @@ It cannot be installed with `go install`, because its `go.mod` carries replace d
 it from a collector checkout:
 
 ```bash
-git clone --depth 1 --branch v0.159.0 https://github.com/open-telemetry/opentelemetry-collector.git
-(cd opentelemetry-collector/cmd/mdatagen && go build -o "$(go env GOPATH)/bin/mdatagen" .)
-mdatagen metadata.yaml
+git clone --depth 1 --branch v0.159.0 \
+  https://github.com/open-telemetry/opentelemetry-collector.git /tmp/collector
+(cd /tmp/collector/cmd/mdatagen && go build -o /tmp/mdatagen .)
+/tmp/mdatagen metadata.yaml
 ```
 
 Run it from a checkout directory named `exportercreator`. mdatagen takes the package name and the

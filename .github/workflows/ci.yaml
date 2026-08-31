@@ -34,6 +34,9 @@ jobs:
             https://github.com/open-telemetry/opentelemetry-collector.git "$RUNNER_TEMP/collector"
           (cd "$RUNNER_TEMP/collector/cmd/mdatagen" && go build -o "$RUNNER_TEMP/mdatagen" .)
           "$RUNNER_TEMP/mdatagen" metadata.yaml
+          # Intent-to-add first: git diff ignores untracked files, so a generated file that
+          # is new rather than changed would leave the tree dirty and still pass.
+          git add -AN .
           git diff --exit-code
 
       - name: Unit tests
