@@ -81,7 +81,7 @@ func TestConsumeMetrics_DiagnosticsAtDebugLevel(t *testing.T) {
 
 // A single exporter matching every resource is the normal case and must not warn.
 func TestRoute_SingleExporterDoesNotWarn(t *testing.T) {
-	params, logs := newObservedSettings(zapcore.InfoLevel)
+	params, logs := newObservedSettings(zapcore.DebugLevel)
 	telemetry, err := metadata.NewTelemetryBuilder(params.TelemetrySettings)
 	require.NoError(t, err)
 
@@ -98,5 +98,6 @@ func TestRoute_SingleExporterDoesNotWarn(t *testing.T) {
 		require.Len(t, router.Route(attrs), 1)
 	}
 
-	assert.Empty(t, logs.All(), "routing to the only configured exporter is not noteworthy")
+	assert.Empty(t, logs.FilterMessage("all exporters matched routing rules - this may indicate a configuration issue").All(),
+		"routing to the only configured exporter must not emit the all-exporters diagnostic")
 }
