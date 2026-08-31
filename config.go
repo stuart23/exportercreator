@@ -190,9 +190,9 @@ func signalsFromConfig(section *confmap.Conf) (exporterSignals, bool, error) {
 
 	var signals exporterSignals
 	for key, value := range values {
-		enabled, err := cast.ToBoolE(value)
-		if err != nil {
-			return exporterSignals{}, true, fmt.Errorf("%q value for %q must be a boolean: %w", signalsConfigKey, key, err)
+		enabled, ok := value.(bool)
+		if !ok {
+			return exporterSignals{}, true, fmt.Errorf("%q value for %q must be a boolean, got %T", signalsConfigKey, key, value)
 		}
 		switch key {
 		case "metrics":
