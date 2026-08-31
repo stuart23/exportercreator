@@ -5,7 +5,6 @@ package exportercreator // import "github.com/stuart23/exportercreator"
 
 import (
 	"context"
-	"errors"
 
 	"go.opentelemetry.io/collector/component"
 	"go.opentelemetry.io/collector/consumer"
@@ -77,23 +76,26 @@ func (s *sharedExporter) ConsumeTraces(ctx context.Context, td ptrace.Traces) er
 
 // getOrAddExporterCreator returns the exporter_creator shared by every pipeline using this config.
 func getOrAddExporterCreator(params exporter.Settings, cfg component.Config) (*sharedExporter, error) {
-	var createErr error
-	sc := exporters.GetOrAdd(cfg, func() component.Component {
-		ec, err := newExporterCreator(params, cfg.(*Config))
-		if err != nil {
-			createErr = err
-			return nil
-		}
-		return ec
-	})
-	if createErr != nil {
-		return nil, createErr
+	// Construct before reaching GetOrAdd. GetOrAdd caches whatever its callback returns, so a
+	// callback that fails would leave behind an entry with no component: every later pipeline
+	// using this config would skip construction and get that entry, and it could not even be
+	// evicted, because removal runs through Shutdown, which would dereference the nil
+	// component. receivercreator and k8sattributesprocessor avoid this by never failing inside
+	// the callback, and so does this.
+	created, err := newExporterCreator(params, cfg.(*Config))
+	if err != nil {
+		return nil, err
 	}
-	// A previous pipeline may have cached an entry whose construction failed.
-	ec, ok := sc.Unwrap().(*exporterCreator)
-	if !ok {
-		return nil, errors.New("exporter_creator failed to initialize for this configuration")
+
+	sc := exporters.GetOrAdd(cfg, func() component.Component { return created })
+	ec := sc.Unwrap().(*exporterCreator)
+	if ec != created {
+		// Another pipeline built the shared instance first, so the one constructed for this
+		// call is surplus. Release its telemetry registrations rather than leaving them
+		// attached to an instance nothing will shut down.
+		created.telemetry.Shutdown()
 	}
+
 	// Every pipeline gets the same wrapper, as receivercreator hands every pipeline the same
 	// SharedComponent. Factory calls happen serially while the collector builds the graph.
 	if ec.shared == nil {

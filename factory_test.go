@@ -5,12 +5,15 @@ package exportercreator
 
 import (
 	"context"
+	"errors"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"go.opentelemetry.io/collector/component"
 	"go.opentelemetry.io/collector/exporter/exportertest"
+	"go.opentelemetry.io/otel/metric"
+	noopmetric "go.opentelemetry.io/otel/metric/noop"
 
 	"github.com/open-telemetry/opentelemetry-collector-contrib/extension/observer"
 	"github.com/stuart23/exportercreator/internal/metadata"
@@ -83,4 +86,42 @@ func TestCreateExporter_StartsOncePerConfig(t *testing.T) {
 	require.NoError(t, mExp.Shutdown(ctx))
 	require.NoError(t, tExp.Shutdown(ctx))
 	assert.Equal(t, 1, obs.unsubscribe, "observer should be unsubscribed from once")
+}
+
+// failingMeter fails to create the first instrument the telemetry builder asks for, which is
+// what makes newExporterCreator return an error.
+type failingMeter struct{ noopmetric.Meter }
+
+func (failingMeter) Int64Gauge(string, ...metric.Int64GaugeOption) (metric.Int64Gauge, error) {
+	return nil, errors.New("induced telemetry failure")
+}
+
+type failingMeterProvider struct{ noopmetric.MeterProvider }
+
+func (failingMeterProvider) Meter(string, ...metric.MeterOption) metric.Meter { return failingMeter{} }
+
+// A failed construction must not be remembered. GetOrAdd caches whatever its callback returns,
+// so failing inside the callback used to leave an entry with no component behind: every later
+// pipeline with this config skipped construction and got that entry back, and it could not be
+// evicted either, because removal runs through Shutdown and would dereference the nil component.
+func TestCreateExporter_FailedCreationIsNotCached(t *testing.T) {
+	factory := NewFactory()
+	cfg := factory.CreateDefaultConfig()
+	ctx := context.Background()
+
+	broken := exportertest.NewNopSettings(metadata.Type)
+	broken.MeterProvider = failingMeterProvider{}
+	_, err := factory.CreateLogs(ctx, broken, cfg)
+	require.Error(t, err, "construction should fail with a meter that cannot create instruments")
+	require.ErrorContains(t, err, "induced telemetry failure")
+
+	// Retrying the same config must construct afresh rather than return the cached failure.
+	lExp, err := factory.CreateLogs(ctx, exportertest.NewNopSettings(metadata.Type), cfg)
+	require.NoError(t, err, "a retry after a failed creation must not see the failed attempt")
+	require.NotNil(t, lExp)
+
+	// And the instance the retry produced is the one later pipelines share.
+	mExp, err := factory.CreateMetrics(ctx, exportertest.NewNopSettings(metadata.Type), cfg)
+	require.NoError(t, err)
+	require.Same(t, lExp, mExp)
 }
