@@ -189,3 +189,8 @@ git clone --depth 1 --branch v0.159.0 https://github.com/open-telemetry/opentele
 (cd opentelemetry-collector/cmd/mdatagen && go build -o "$(go env GOPATH)/bin/mdatagen" .)
 mdatagen metadata.yaml
 ```
+
+Run it from a checkout directory named `exportercreator`. mdatagen takes the package name and the
+README badge labels from the directory, so generating from a differently named directory (a git
+worktree, say) rewrites `generated_component_test.go`, `generated_package_test.go` and the README
+status table to match that name.
