@@ -75,3 +75,12 @@ func TestConfig_SignalsRejectsNonBoolean(t *testing.T) {
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "metrics")
 }
+
+// A signals block written as a list (or anything else that is not a map) reaches the parser
+// as-is, since the block has no mapstructure field to reject it earlier.
+func TestConfig_SignalsRejectsNonMap(t *testing.T) {
+	cfg := createDefaultConfig().(*Config)
+	err := cfg.Unmarshal(confWithSignals([]any{"metrics", "logs"}))
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "must be a map")
+}
