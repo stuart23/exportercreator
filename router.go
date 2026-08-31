@@ -24,6 +24,10 @@ type telemetryRouter struct {
 	// exporters maps an endpoint to every exporter created for it. One endpoint may match
 	// several exporter templates, each producing its own exporter with its own properties.
 	exporters map[observer.EndpointID][]*routedExporter
+	// count is the total number of exporters across every endpoint in exporters, kept in
+	// step with it under mu. Routing reads the count several times per batch, and totalling
+	// the map each time made that scale with the number of exporters.
+	count     int
 	telemetry *metadata.TelemetryBuilder
 	logger    *zap.Logger
 }
@@ -60,10 +64,11 @@ func (r *telemetryRouter) AddExporter(id observer.EndpointID, exp component.Comp
 		exporter:   exp,
 		properties: flattenProperties(env),
 	})
+	r.count++
 
 	// Update the gauge metric with the current count
 	if r.telemetry != nil {
-		r.telemetry.ExporterCreatorExportersCount.Record(context.Background(), int64(r.countLocked()))
+		r.telemetry.ExporterCreatorExportersCount.Record(context.Background(), int64(r.count))
 	}
 }
 
@@ -72,11 +77,12 @@ func (r *telemetryRouter) RemoveExporter(id observer.EndpointID) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
+	r.count -= len(r.exporters[id])
 	delete(r.exporters, id)
 
 	// Update the gauge metric with the current count
 	if r.telemetry != nil {
-		r.telemetry.ExporterCreatorExportersCount.Record(context.Background(), int64(r.countLocked()))
+		r.telemetry.ExporterCreatorExportersCount.Record(context.Background(), int64(r.count))
 	}
 }
 
@@ -92,15 +98,15 @@ func (r *telemetryRouter) Route(resourceAttrs pcommon.Map) []component.Component
 		r.logger.Debug("routing metrics",
 			zap.Any("resource_attributes", resourceAttrsMap),
 			zap.Int("routing_rules", len(r.rules)),
-			// Count, not countLocked: this runs before Route takes r.mu, and
-			// countLocked iterates the exporters map.
+			// Count, not r.count: this runs before Route takes r.mu, and an
+			// unsynchronized read races the observer callbacks that maintain it.
 			zap.Int("available_exporters", r.Count()),
 		)
 	}
 
 	if len(r.rules) == 0 {
 		r.mu.RLock()
-		exportersCount := r.countLocked()
+		exportersCount := r.count
 		r.mu.RUnlock()
 		if r.logger != nil {
 			// Convert resource attrs to map for logging
@@ -120,7 +126,7 @@ func (r *telemetryRouter) Route(resourceAttrs pcommon.Map) []component.Component
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 
-	if r.countLocked() == 0 {
+	if r.count == 0 {
 		if r.logger != nil {
 			// Convert resource attrs to map for logging
 			resourceAttrsMap := make(map[string]string)
@@ -189,7 +195,7 @@ func (r *telemetryRouter) Route(resourceAttrs pcommon.Map) []component.Component
 
 	// Log why routing failed if no exporters matched
 	// Always log at DEBUG level when routing fails to help diagnose issues
-	if len(matched) == 0 && r.countLocked() > 0 {
+	if len(matched) == 0 && r.count > 0 {
 		// Convert resource attrs to map for logging
 		resourceAttrsMap := make(map[string]string)
 		resourceAttrs.Range(func(k string, v pcommon.Value) bool {
@@ -201,7 +207,7 @@ func (r *telemetryRouter) Route(resourceAttrs pcommon.Map) []component.Component
 		if r.logger != nil {
 			r.logger.Debug("metrics did not match any routing rules",
 				zap.Any("resource_attributes", resourceAttrsMap),
-				zap.Int("available_exporters", r.countLocked()),
+				zap.Int("available_exporters", r.count),
 				zap.Int("routing_rules", len(r.rules)),
 			)
 
@@ -240,7 +246,7 @@ func (r *telemetryRouter) Route(resourceAttrs pcommon.Map) []component.Component
 
 	// Defensive check: ensure we never return all exporters when rules don't match
 	// This should never happen, but we check to prevent bugs
-	if len(matched) == r.countLocked() && len(r.rules) > 0 {
+	if len(matched) == r.count && len(r.rules) > 0 {
 		// This would mean all exporters matched, which is suspicious
 		// Log a warning but still return the matched exporters
 		if r.logger != nil {
@@ -264,15 +270,7 @@ func (r *telemetryRouter) Route(resourceAttrs pcommon.Map) []component.Component
 func (r *telemetryRouter) Count() int {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
-	return r.countLocked()
-}
-
-// countLocked returns the number of exporters. The caller must hold r.mu.
-func (r *telemetryRouter) countLocked() (n int) {
-	for _, exps := range r.exporters {
-		n += len(exps)
-	}
-	return n
+	return r.count
 }
 
 // matchesAllRules checks if all routing rules match for the given resource attributes and endpoint properties.

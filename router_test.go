@@ -256,9 +256,8 @@ func TestTelemetryRouter_Route_WithCRDSpec(t *testing.T) {
 }
 
 // Route logs the exporter count before it takes r.mu, so that count must come from the
-// locking Count. countLocked iterates the exporters map, which the runtime kills the process
-// for ("concurrent map iteration and map write") when an observer callback adds or removes an
-// endpoint at the same time - and routing runs concurrently with those callbacks in production.
+// locking Count and not a bare read of r.count: observer callbacks maintain that field while
+// routing reads it, and routing runs concurrently with those callbacks in production.
 func TestTelemetryRouter_RouteConcurrentWithEndpointChurn(t *testing.T) {
 	telemetry, err := metadata.NewTelemetryBuilder(componenttest.NewNopTelemetrySettings())
 	require.NoError(t, err)
@@ -293,4 +292,54 @@ func TestTelemetryRouter_RouteConcurrentWithEndpointChurn(t *testing.T) {
 	}()
 
 	wg.Wait()
+}
+
+// The exporter total is now cached rather than derived, so it can drift from the map it
+// summarises. Every mutation path has to keep the two in step, including the ones that are
+// easy to get wrong: several exporters under one endpoint, and removing an endpoint that
+// was never added or was already removed.
+func TestTelemetryRouter_CachedCountMatchesExporters(t *testing.T) {
+	telemetry, err := metadata.NewTelemetryBuilder(componenttest.NewNopTelemetrySettings())
+	require.NoError(t, err)
+	router := newTelemetryRouter([]RoutingRule{}, telemetry)
+
+	// recount derives the total the way countLocked used to, to compare against the cache.
+	recount := func() (n int) {
+		router.mu.RLock()
+		defer router.mu.RUnlock()
+		for _, exps := range router.exporters {
+			n += len(exps)
+		}
+		return n
+	}
+	requireConsistent := func(want int, step string) {
+		t.Helper()
+		require.Equal(t, want, recount(), "exporters map after %s", step)
+		require.Equal(t, want, router.Count(), "cached count after %s", step)
+	}
+
+	env := observer.EndpointEnv{"labels": map[string]string{"app": "test"}}
+	a, b := observer.EndpointID("endpoint-a"), observer.EndpointID("endpoint-b")
+
+	requireConsistent(0, "construction")
+
+	// Two exporters under one endpoint: the remove has to subtract both, not one.
+	router.AddExporter(a, &nopExporterComponent{}, env)
+	router.AddExporter(a, &nopExporterComponent{}, env)
+	requireConsistent(2, "two exporters on one endpoint")
+
+	router.AddExporter(b, &nopExporterComponent{}, env)
+	requireConsistent(3, "a second endpoint")
+
+	router.RemoveExporter(a)
+	requireConsistent(1, "removing the two-exporter endpoint")
+
+	router.RemoveExporter(a)
+	requireConsistent(1, "removing an already-removed endpoint")
+
+	router.RemoveExporter(observer.EndpointID("never-added"))
+	requireConsistent(1, "removing an unknown endpoint")
+
+	router.RemoveExporter(b)
+	requireConsistent(0, "removing the last endpoint")
 }
