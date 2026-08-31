@@ -51,6 +51,10 @@ You also need at least one **observer extension** in the same manifest (for exam
 
 ## Configuration
 
+Every deployment needs three things: an observer to discover endpoints, at least one exporter
+template with a rule saying which endpoints it applies to, and at least one routing rule saying
+which telemetry belongs to which endpoint.
+
 ```yaml
 extensions:
   k8s_observer:
@@ -58,19 +62,17 @@ extensions:
 
 exporters:
   exporter_creator:
-    # Observer extensions to watch for endpoint discovery
+    # Observer extensions to watch for endpoint discovery.
     watch_observers: [k8s_observer]
-    
-    # Rules for routing telemetry to exporters based on resource attributes
+
+    # Which telemetry belongs to which endpoint. The resource attribute is read from the
+    # telemetry, the endpoint property from the discovered endpoint, and they must be equal.
     routing:
       rules:
         - resource_attribute: k8s.pod.labels.app
           endpoint_property: labels.app
-    
-    # Fallback exporters for unmatched telemetry
-    default_exporters: [otlp/default]
-    
-    # Exporter templates - created when endpoints match rules
+
+    # Exporter templates. One exporter is created per endpoint the rule matches.
     exporters:
       otlp/per-app:
         rule: type == "pod" && labels["otel-export"] == "true"
@@ -85,14 +87,21 @@ service:
       exporters: [exporter_creator]
 ```
 
+See [Examples](#examples) for this worked through end to end, and for a larger configuration.
+
 ## Configuration Options
 
 | Option | Type | Description |
 |--------|------|-------------|
 | `watch_observers` | `[]component.ID` | Observer extensions to watch for endpoint discovery |
 | `routing.rules` | `[]RoutingRule` | Rules for matching resource attributes to endpoint properties |
-| `default_exporters` | `[]component.ID` | Static exporters to receive unmatched telemetry |
+| `default_exporters` | `[]component.ID` | Static exporters to receive unmatched telemetry. **Accepted but not yet wired up** - see below |
 | `exporters` | `map[string]exporterTemplate` | Exporter templates to instantiate when rules match |
+
+`default_exporters` is validated and stored, but the lookup that would resolve those IDs to
+running exporters is not implemented, so the set is always empty at runtime. Telemetry that
+matches no endpoint is counted by the non-routable metrics and dropped, whether or not this is
+configured. The examples below do not use it.
 
 ### Routing Rules
 
@@ -166,6 +175,165 @@ Configuration values can reference endpoint properties using backtick expression
 config:
   endpoint: '`labels["collector-endpoint"]`'
   topic: '`annotations["kafka.topic"]`'
+```
+
+## Examples
+
+### Simple: one exporter per application
+
+A collector receiving OTLP from many applications, forwarding each application's telemetry to
+the collector running beside it.
+
+`k8s_observer` reports a `pod` endpoint for every pod. The template creates an `otlp` exporter
+for each pod carrying the `otel-export: "true"` label, pointed at the address in that pod's
+`collector-endpoint` label. The routing rule then sends a resource to that exporter when the
+telemetry's `k8s.pod.labels.app` equals the pod's `app` label.
+
+```yaml
+extensions:
+  k8s_observer:
+    observe_pods: true
+
+exporters:
+  exporter_creator:
+    watch_observers: [k8s_observer]
+    routing:
+      rules:
+        - resource_attribute: k8s.pod.labels.app
+          endpoint_property: labels.app
+    exporters:
+      otlp/per-app:
+        rule: type == "pod" && labels["otel-export"] == "true"
+        config:
+          endpoint: '`labels["collector-endpoint"]`'
+          tls:
+            insecure: true
+
+service:
+  extensions: [k8s_observer]
+  pipelines:
+    metrics:
+      receivers: [otlp]
+      exporters: [exporter_creator]
+    traces:
+      receivers: [otlp]
+      exporters: [exporter_creator]
+```
+
+A pod labelled `app: checkout`, `otel-export: "true"`, `collector-endpoint: checkout-collector:4317`
+gets an exporter sending to `checkout-collector:4317`, and every resource whose
+`k8s.pod.labels.app` is `checkout` is routed to it.
+
+### Complex: several templates, observers and signals
+
+```yaml
+extensions:
+  k8s_observer:
+    observe_pods: true
+    observe_services: true
+  host_observer:
+
+exporters:
+  exporter_creator:
+    # Endpoints from either observer are matched against every template below.
+    watch_observers: [k8s_observer, host_observer]
+
+    # Every rule must match for a resource to reach an exporter, so this pair means
+    # "same application, same region".
+    routing:
+      rules:
+        - resource_attribute: k8s.pod.labels.app
+          endpoint_property: pod.labels.app
+        - resource_attribute: deployment.region
+          endpoint_property: region
+
+    exporters:
+      # A per-pod OTLP collector, discovered by the port it listens on. Port endpoints nest
+      # the pod, so its labels are reached through `pod.` rather than at the top level.
+      otlp/sidecar:
+        rule: type == "port" && port == 4317 && pod.labels["otel-export"] == "true"
+        config:
+          endpoint: '`endpoint`'
+          tls:
+            insecure: true
+        # Merged into the endpoint's properties, so routing rules can match on them as well.
+        # `region` is the second routing rule's endpoint_property.
+        resource_attributes:
+          region: '`pod.labels["topology.kubernetes.io/region"]`'
+
+      # Metrics-only backend. Naming a signal disables the ones left out, so logs and traces
+      # matching this endpoint are not sent here - and are dropped unless another matched
+      # exporter takes them.
+      prometheusremotewrite/metrics:
+        rule: type == "k8s.service" && annotations["prometheus.io/remote-write"] == "true"
+        signals:
+          metrics: true
+        config:
+          endpoint: 'http://`endpoint`:`"prometheus.io/port" in annotations ? annotations["prometheus.io/port"] : 9090`/api/v1/write'
+        resource_attributes:
+          region: '`labels["topology.kubernetes.io/region"]`'
+
+      # An agent found on the host rather than in Kubernetes, taking logs and traces only.
+      otlp/host-agent:
+        rule: type == "hostport" && port == 4318 && string(transport) == "TCP"
+        signals:
+          logs: true
+          traces: true
+        config:
+          endpoint: '`endpoint`'
+        # A host endpoint carries nothing to derive a region from, so it is stated. Without it
+        # the second routing rule could never match and this exporter would receive nothing.
+        resource_attributes:
+          region: us-east-1
+
+service:
+  extensions: [k8s_observer, host_observer]
+  pipelines:
+    metrics:
+      receivers: [otlp]
+      exporters: [exporter_creator]
+    logs:
+      receivers: [otlp]
+      exporters: [exporter_creator]
+    traces:
+      receivers: [otlp]
+      exporters: [exporter_creator]
+```
+
+Three things in that configuration are worth calling out.
+
+**One endpoint can produce several exporters.** Every template whose rule matches an endpoint
+gets its own exporter for it, and telemetry matching that endpoint is delivered to all of them.
+
+**Routing rules are ANDed.** A resource reaches an exporter only when *every* rule matches, so
+adding a rule narrows what is routed rather than widening it. A resource missing one of the
+attributes named on the left matches nothing at all.
+
+**`resource_attributes` are routable.** They are expanded per endpoint and merged into that
+endpoint's properties, so a rule's `endpoint_property` can name one of them. That is how
+`region` above is matched against telemetry even though no observer reports a `region` property:
+each template derives it from whatever that endpoint type does provide.
+
+### Endpoint properties available to rules
+
+`rule` expressions and `endpoint_property` paths both read the endpoint's properties, which
+differ by endpoint type. The two most common:
+
+| Endpoint | Properties |
+|---|---|
+| `pod` | `type`, `id`, `endpoint`, `host`, `name`, `namespace`, `uid`, `labels.*`, `annotations.*` |
+| `port` | `type`, `id`, `endpoint`, `host`, `port`, `name`, `transport`, `container_name`, `container_id`, `container_image`, `pod.name`, `pod.namespace`, `pod.uid`, `pod.labels.*`, `pod.annotations.*` |
+
+The full set for every type is documented by the
+[observer extensions](https://github.com/open-telemetry/opentelemetry-collector-contrib/tree/main/extension/observer#endpoint-types).
+Note the difference above: a `pod` endpoint carries `labels` at the top level, while a `port`
+endpoint nests them under `pod`.
+
+`transport` is not a plain string but a named type, so `transport == "TCP"` is false rather
+than an error. Convert it first:
+
+```yaml
+rule: type == "hostport" && string(transport) == "TCP"
 ```
 
 ## Development
