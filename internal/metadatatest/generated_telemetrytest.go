@@ -82,3 +82,17 @@ func AssertEqualExporterCreatorNonroutableSpansTotal(t *testing.T, tt *component
 	require.NoError(t, err)
 	metricdatatest.AssertEqual(t, want, got, opts...)
 }
+
+func AssertEqualExporterCreatorObservedEndpoints(t *testing.T, tt *componenttest.Telemetry, dps []metricdata.DataPoint[int64], opts ...metricdatatest.Option) {
+	want := metricdata.Metrics{
+		Name:        "otelcol_exporter_creator_observed_endpoints",
+		Description: "Current number of endpoints reported by the observers being watched. [Development]",
+		Unit:        "{endpoints}",
+		Data: metricdata.Gauge[int64]{
+			DataPoints: dps,
+		},
+	}
+	got, err := tt.GetMetric("otelcol_exporter_creator_observed_endpoints")
+	require.NoError(t, err)
+	metricdatatest.AssertEqual(t, want, got, opts...)
+}

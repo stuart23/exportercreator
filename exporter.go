@@ -38,12 +38,19 @@ type exporterCreator struct {
 	params           exporter.Settings
 	cfg              *Config
 	observerHandler  *observerHandler
-	observables      []observer.Observable
+	watched          []watchedObserver
 	router           *telemetryRouter
 	telemetry        *metadata.TelemetryBuilder
 	defaultExporters map[component.ID]component.Component
 	// shared is the wrapper handed to every pipeline referencing this creator; see factory.go.
 	shared *sharedExporter
+}
+
+// watchedObserver pairs an observable with the subscription registered on it, so that
+// shutdown unsubscribes the same Notify that ListAndWatch was given.
+type watchedObserver struct {
+	observable observer.Observable
+	notify     *observerNotify
 }
 
 // host is an interface that the component.Host passed to exportercreator's Start function must implement
@@ -74,11 +81,6 @@ func (ec *exporterCreator) Start(ctx context.Context, h component.Host) error {
 	ecHost, ok := h.(host)
 	if !ok {
 		return errors.New("the exporter_creator is not compatible with the provided component.host")
-	}
-
-	// Initialize the gauge metric to 0
-	if ec.telemetry != nil {
-		ec.telemetry.ExporterCreatorExportersCount.Record(ctx, 0)
 	}
 
 	// Get default exporters from host
@@ -126,10 +128,14 @@ func (ec *exporterCreator) Start(ctx context.Context, h component.Host) error {
 		ec.params.Logger.Warn("no observers were configured and no subexporters will be started. exporter_creator will be disabled")
 	}
 
-	// Start all configured watchers.
-	for _, observable := range observers {
-		ec.observables = append(ec.observables, observable)
-		observable.ListAndWatch(ec.observerHandler)
+	// Start all configured watchers. Each gets its own subscription so that the endpoints it
+	// reports can be attributed to it; they all delegate to the one shared handler, and share
+	// one set of counts so that instances of the same observer type sum rather than overwrite.
+	tracker := newEndpointTracker(ec.telemetry)
+	for observerID, observable := range observers {
+		notify := newObserverNotify(ec.params.ID, observerID, ec.observerHandler, tracker)
+		ec.watched = append(ec.watched, watchedObserver{observable: observable, notify: notify})
+		observable.ListAndWatch(notify)
 	}
 
 	return nil
@@ -139,9 +145,9 @@ func (ec *exporterCreator) Start(ctx context.Context, h component.Host) error {
 func (ec *exporterCreator) Shutdown(ctx context.Context) error {
 	var errs []error
 
-	// Unsubscribe from all observers
-	for _, observable := range ec.observables {
-		observable.Unsubscribe(ec.observerHandler)
+	// Unsubscribe from all observers, using the same Notify each was registered with.
+	for _, w := range ec.watched {
+		w.observable.Unsubscribe(w.notify)
 	}
 
 	// Shutdown observer handler (which shuts down all sub-exporters)

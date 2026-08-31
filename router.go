@@ -11,6 +11,8 @@ import (
 
 	"go.opentelemetry.io/collector/component"
 	"go.opentelemetry.io/collector/pdata/pcommon"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/metric"
 	"go.uber.org/zap"
 	"go.uber.org/zap/zapcore"
 
@@ -28,7 +30,11 @@ type telemetryRouter struct {
 	// count is the total number of exporters across every endpoint in exporters, kept in
 	// step with it under mu. Routing reads the count several times per batch, and totalling
 	// the map each time made that scale with the number of exporters.
-	count     int
+	count int
+	// byType is the same total broken down by exporter type, for the exporters_count
+	// attribute. A type stays in the map once seen, at zero, so that the gauge keeps
+	// reporting zero for it rather than leaving its last non-zero value standing.
+	byType    map[string]int
 	telemetry *metadata.TelemetryBuilder
 	logger    *zap.Logger
 }
@@ -37,6 +43,9 @@ type telemetryRouter struct {
 type routedExporter struct {
 	exporter   component.Component
 	properties map[string]any // Flattened endpoint properties
+	// exporterType is the type of the template this exporter was built from, e.g. "otlp".
+	// Recorded so removal can decrement the right series without re-deriving it.
+	exporterType string
 }
 
 // newTelemetryRouter creates a new telemetry router with the given routing rules.
@@ -44,6 +53,7 @@ func newTelemetryRouter(rules []RoutingRule, telemetry *metadata.TelemetryBuilde
 	return &telemetryRouter{
 		rules:     rules,
 		exporters: make(map[observer.EndpointID][]*routedExporter),
+		byType:    map[string]int{},
 		telemetry: telemetry,
 		logger:    nil, // Will be set if logger is available
 	}
@@ -56,21 +66,21 @@ func (r *telemetryRouter) setLogger(logger *zap.Logger) {
 	r.logger = logger
 }
 
-// AddExporter registers an exporter with its endpoint properties.
-func (r *telemetryRouter) AddExporter(id observer.EndpointID, exp component.Component, env observer.EndpointEnv) {
+// AddExporter registers an exporter with its endpoint properties. exporterType is the type of
+// the template it was built from, and labels it in the exporters_count gauge.
+func (r *telemetryRouter) AddExporter(id observer.EndpointID, exp component.Component, env observer.EndpointEnv, exporterType string) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
 	r.exporters[id] = append(r.exporters[id], &routedExporter{
-		exporter:   exp,
-		properties: flattenProperties(env),
+		exporter:     exp,
+		properties:   flattenProperties(env),
+		exporterType: exporterType,
 	})
 	r.count++
+	r.byType[exporterType]++
 
-	// Update the gauge metric with the current count
-	if r.telemetry != nil {
-		r.telemetry.ExporterCreatorExportersCount.Record(context.Background(), int64(r.count))
-	}
+	r.recordCountLocked()
 }
 
 // RemoveExporter unregisters every exporter created for an endpoint.
@@ -78,12 +88,27 @@ func (r *telemetryRouter) RemoveExporter(id observer.EndpointID) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
+	for _, re := range r.exporters[id] {
+		r.byType[re.exporterType]--
+	}
 	r.count -= len(r.exporters[id])
 	delete(r.exporters, id)
 
-	// Update the gauge metric with the current count
-	if r.telemetry != nil {
-		r.telemetry.ExporterCreatorExportersCount.Record(context.Background(), int64(r.count))
+	r.recordCountLocked()
+}
+
+// recordCountLocked reports the exporter count per type. The caller must hold r.mu.
+//
+// Every known type is reported on every change, including the ones now at zero: a gauge only
+// reports the series it is given, so a type that stopped being written would keep exporting
+// whatever it last held.
+func (r *telemetryRouter) recordCountLocked() {
+	if r.telemetry == nil {
+		return
+	}
+	for exporterType, n := range r.byType {
+		r.telemetry.ExporterCreatorExportersCount.Record(context.Background(), int64(n),
+			metric.WithAttributes(attribute.String("exporter_type", exporterType)))
 	}
 }
 

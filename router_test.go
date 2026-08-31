@@ -13,10 +13,14 @@ import (
 	"go.opentelemetry.io/collector/component"
 	"go.opentelemetry.io/collector/component/componenttest"
 	"go.opentelemetry.io/collector/pdata/pcommon"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/sdk/metric/metricdata"
+	"go.opentelemetry.io/otel/sdk/metric/metricdata/metricdatatest"
 	"go.uber.org/zap"
 
 	"github.com/open-telemetry/opentelemetry-collector-contrib/extension/observer"
 	"github.com/stuart23/exportercreator/internal/metadata"
+	"github.com/stuart23/exportercreator/internal/metadatatest"
 )
 
 // nopExporterComponent is a simple exporter component for testing
@@ -37,7 +41,7 @@ func TestTelemetryRouter_AddExporter(t *testing.T) {
 		},
 	}
 
-	router.AddExporter(observer.EndpointID("endpoint-1"), mockExporter, env)
+	router.AddExporter(observer.EndpointID("endpoint-1"), mockExporter, env, "otlp")
 
 	assert.Equal(t, 1, router.Count())
 }
@@ -54,7 +58,7 @@ func TestTelemetryRouter_RemoveExporter(t *testing.T) {
 		},
 	}
 
-	router.AddExporter(observer.EndpointID("endpoint-1"), mockExporter, env)
+	router.AddExporter(observer.EndpointID("endpoint-1"), mockExporter, env, "otlp")
 	assert.Equal(t, 1, router.Count())
 
 	router.RemoveExporter(observer.EndpointID("endpoint-1"))
@@ -79,7 +83,7 @@ func TestTelemetryRouter_Route(t *testing.T) {
 		},
 	}
 
-	router.AddExporter(observer.EndpointID("endpoint-1"), mockExporter, env)
+	router.AddExporter(observer.EndpointID("endpoint-1"), mockExporter, env, "otlp")
 
 	resourceAttrs := pcommon.NewMap()
 	resourceAttrs.PutStr("app", "test")
@@ -240,7 +244,7 @@ func TestTelemetryRouter_Route_WithCRDSpec(t *testing.T) {
 		},
 	}
 
-	router.AddExporter(observer.EndpointID("endpoint-1"), mockExporter, env)
+	router.AddExporter(observer.EndpointID("endpoint-1"), mockExporter, env, "otlp")
 
 	// Test matching resource attributes
 	resourceAttrs := pcommon.NewMap()
@@ -286,7 +290,7 @@ func TestTelemetryRouter_RouteConcurrentWithEndpointChurn(t *testing.T) {
 		env := observer.EndpointEnv{"labels": map[string]string{"app": "test"}}
 		for i := 0; i < iterations; i++ {
 			id := observer.EndpointID(fmt.Sprintf("endpoint-%d", i))
-			router.AddExporter(id, &nopExporterComponent{}, env)
+			router.AddExporter(id, &nopExporterComponent{}, env, "otlp")
 			router.RemoveExporter(id)
 		}
 	}()
@@ -324,11 +328,11 @@ func TestTelemetryRouter_CachedCountMatchesExporters(t *testing.T) {
 	requireConsistent(0, "construction")
 
 	// Two exporters under one endpoint: the remove has to subtract both, not one.
-	router.AddExporter(a, &nopExporterComponent{}, env)
-	router.AddExporter(a, &nopExporterComponent{}, env)
+	router.AddExporter(a, &nopExporterComponent{}, env, "otlp")
+	router.AddExporter(a, &nopExporterComponent{}, env, "otlp")
 	requireConsistent(2, "two exporters on one endpoint")
 
-	router.AddExporter(b, &nopExporterComponent{}, env)
+	router.AddExporter(b, &nopExporterComponent{}, env, "otlp")
 	requireConsistent(3, "a second endpoint")
 
 	router.RemoveExporter(a)
@@ -342,4 +346,73 @@ func TestTelemetryRouter_CachedCountMatchesExporters(t *testing.T) {
 
 	router.RemoveExporter(b)
 	requireConsistent(0, "removing the last endpoint")
+}
+
+func exportersSeen(byType map[string]int64) []metricdata.DataPoint[int64] {
+	dps := make([]metricdata.DataPoint[int64], 0, len(byType))
+	for exporterType, n := range byType {
+		dps = append(dps, metricdata.DataPoint[int64]{
+			Attributes: attribute.NewSet(attribute.String("exporter_type", exporterType)),
+			Value:      n,
+		})
+	}
+	return dps
+}
+
+func TestTelemetryRouter_CountsExportersByType(t *testing.T) {
+	tt := componenttest.NewTelemetry()
+	telemetry, err := metadata.NewTelemetryBuilder(metadatatest.NewSettings(tt).TelemetrySettings)
+	require.NoError(t, err)
+	router := newTelemetryRouter([]RoutingRule{}, telemetry)
+
+	env := observer.EndpointEnv{"labels": map[string]string{"app": "test"}}
+	router.AddExporter("a", &nopExporterComponent{}, env, "otlp")
+	router.AddExporter("b", &nopExporterComponent{}, env, "otlp")
+	router.AddExporter("c", &nopExporterComponent{}, env, "prometheusremotewrite")
+
+	metadatatest.AssertEqualExporterCreatorExportersCount(t, tt,
+		exportersSeen(map[string]int64{"otlp": 2, "prometheusremotewrite": 1}),
+		metricdatatest.IgnoreTimestamp())
+	assert.Equal(t, 3, router.Count())
+}
+
+// A gauge only reports the series it is written, so a type that drops to zero has to be
+// reported as zero rather than left holding its last value.
+func TestTelemetryRouter_ReportsZeroForEmptiedExporterType(t *testing.T) {
+	tt := componenttest.NewTelemetry()
+	telemetry, err := metadata.NewTelemetryBuilder(metadatatest.NewSettings(tt).TelemetrySettings)
+	require.NoError(t, err)
+	router := newTelemetryRouter([]RoutingRule{}, telemetry)
+
+	env := observer.EndpointEnv{"labels": map[string]string{"app": "test"}}
+	router.AddExporter("a", &nopExporterComponent{}, env, "otlp")
+	router.AddExporter("b", &nopExporterComponent{}, env, "prometheusremotewrite")
+	router.RemoveExporter("a")
+
+	metadatatest.AssertEqualExporterCreatorExportersCount(t, tt,
+		exportersSeen(map[string]int64{"otlp": 0, "prometheusremotewrite": 1}),
+		metricdatatest.IgnoreTimestamp())
+	assert.Equal(t, 1, router.Count())
+}
+
+// One endpoint matching several templates yields several exporters, each counted under its own
+// type, and removal drops all of them together.
+func TestTelemetryRouter_CountsEveryExporterOnAnEndpoint(t *testing.T) {
+	tt := componenttest.NewTelemetry()
+	telemetry, err := metadata.NewTelemetryBuilder(metadatatest.NewSettings(tt).TelemetrySettings)
+	require.NoError(t, err)
+	router := newTelemetryRouter([]RoutingRule{}, telemetry)
+
+	env := observer.EndpointEnv{"labels": map[string]string{"app": "test"}}
+	router.AddExporter("shared", &nopExporterComponent{}, env, "otlp")
+	router.AddExporter("shared", &nopExporterComponent{}, env, "debug")
+	metadatatest.AssertEqualExporterCreatorExportersCount(t, tt,
+		exportersSeen(map[string]int64{"otlp": 1, "debug": 1}),
+		metricdatatest.IgnoreTimestamp())
+
+	router.RemoveExporter("shared")
+	metadatatest.AssertEqualExporterCreatorExportersCount(t, tt,
+		exportersSeen(map[string]int64{"otlp": 0, "debug": 0}),
+		metricdatatest.IgnoreTimestamp())
+	assert.Equal(t, 0, router.Count())
 }
