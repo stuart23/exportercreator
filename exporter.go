@@ -18,6 +18,7 @@ import (
 	"go.opentelemetry.io/collector/service/hostcapabilities"
 	"go.uber.org/multierr"
 	"go.uber.org/zap"
+	"go.uber.org/zap/zapcore"
 
 	"github.com/open-telemetry/opentelemetry-collector-contrib/extension/observer"
 	"github.com/stuart23/exportercreator/internal/metadata"
@@ -242,10 +243,16 @@ func (ec *exporterCreator) ConsumeLogs(ctx context.Context, ld plog.Logs) error 
 }
 
 // ConsumeMetrics routes metrics to the appropriate sub-exporter based on resource attributes.
+// ConsumeMetrics routes metrics to the appropriate sub-exporter based on resource attributes.
 func (ec *exporterCreator) ConsumeMetrics(ctx context.Context, md pmetric.Metrics) error {
 	if ec.router == nil {
 		return nil
 	}
+
+	logger := ec.params.Logger
+	// Rendering resource attributes for logging allocates a map per resource, on every export.
+	// Only pay for it when a debug-level log would actually be emitted.
+	debug := logger.Core().Enabled(zapcore.DebugLevel)
 
 	var errs []error
 	exportersByComponent := make(map[component.Component]pmetric.Metrics)
@@ -256,8 +263,7 @@ func (ec *exporterCreator) ConsumeMetrics(ctx context.Context, md pmetric.Metric
 		rm := md.ResourceMetrics().At(i)
 		resourceAttrs := rm.Resource().Attributes()
 
-		// Find matching exporters
-		// The router will log detailed information at INFO level about why routing fails
+		// Find matching exporters. The router logs why routing failed at debug level.
 		matchedExporters := ec.router.Route(resourceAttrs)
 
 		if len(matchedExporters) > 0 {
@@ -275,38 +281,30 @@ func (ec *exporterCreator) ConsumeMetrics(ctx context.Context, md pmetric.Metric
 					if _, exists := exportersByComponent[exp]; !exists {
 						exportersByComponent[exp] = pmetric.NewMetrics()
 					}
-					// Log which ResourceMetrics are being added to which exporter
-					attrs := make(map[string]string)
-					resourceAttrs.Range(func(k string, v pcommon.Value) bool {
-						attrs[k] = v.AsString()
-						return true
-					})
-					ec.params.Logger.Debug("adding ResourceMetrics to exporter",
-						zap.String("exporter_type", fmt.Sprintf("%T", exp)),
-						zap.Any("resource_attributes", attrs),
-					)
+					if debug {
+						logger.Debug("adding ResourceMetrics to exporter",
+							zap.String("exporter_type", fmt.Sprintf("%T", exp)),
+							zap.Any("resource_attributes", attrsToMap(resourceAttrs)),
+						)
+					}
 					rm.CopyTo(exportersByComponent[exp].ResourceMetrics().AppendEmpty())
 				}
 			}
 		} else {
-			// No match, add to unmatched
-			// The router will log detailed information about why routing failed at INFO level
-			// Log the resource attributes for debugging
-			attrs := make(map[string]string)
-			resourceAttrs.Range(func(k string, v pcommon.Value) bool {
-				attrs[k] = v.AsString()
-				return true
-			})
-			ec.params.Logger.Info("metrics did not match any routing rules, adding to unmatched",
-				zap.Any("resource_attributes", attrs),
-			)
+			// No match, add to unmatched. Per-resource detail is debug-only; the aggregate
+			// is reported below and counted by the non-routable metric.
+			if debug {
+				logger.Debug("metrics did not match any routing rules, adding to unmatched",
+					zap.Any("resource_attributes", attrsToMap(resourceAttrs)),
+				)
+			}
 			rm.CopyTo(unmatchedMetrics.ResourceMetrics().AppendEmpty())
 		}
 	}
 
 	// Send to matched exporters
-	if len(exportersByComponent) > 0 {
-		ec.params.Logger.Debug("sending metrics to matched exporters",
+	if debug && len(exportersByComponent) > 0 {
+		logger.Debug("sending metrics to matched exporters",
 			zap.Int("exporter_count", len(exportersByComponent)),
 			zap.Int("total_metric_points", int(countMetricPoints(md))),
 		)
@@ -314,64 +312,56 @@ func (ec *exporterCreator) ConsumeMetrics(ctx context.Context, md pmetric.Metric
 
 	for exp, metrics := range exportersByComponent {
 		var metricsExp exporter.Metrics
+		expType := fmt.Sprintf("%T", exp)
 		// Check if it's a wrappedExporter and extract the metrics exporter
 		if we, ok := exp.(*wrappedExporter); ok {
 			if we.metrics != nil {
 				metricsExp = we.metrics
-				ec.params.Logger.Info("extracted metrics exporter from wrappedExporter",
-					zap.String("exporter_type", fmt.Sprintf("%T", we.metrics)),
-					zap.Int("metrics_to_send", metrics.ResourceMetrics().Len()),
-				)
 			} else {
-				ec.params.Logger.Warn("wrappedExporter has no metrics exporter",
-					zap.String("exporter_type", fmt.Sprintf("%T", exp)),
+				// Unreachable: the grouping loop above only records exporters that yielded a
+				// non-nil metrics exporter. Kept as a guard against that invariant breaking.
+				logger.Warn("wrappedExporter has no metrics exporter, dropping metrics",
+					zap.String("exporter_type", expType),
+					zap.Int("metrics_lost", metrics.ResourceMetrics().Len()),
 				)
 			}
 		} else if me, ok := exp.(exporter.Metrics); ok {
 			metricsExp = me
-			ec.params.Logger.Debug("using direct metrics exporter",
-				zap.String("exporter_type", fmt.Sprintf("%T", exp)),
-			)
 		} else {
-			ec.params.Logger.Warn("exporter does not support metrics or is not a wrappedExporter",
-				zap.String("exporter_type", fmt.Sprintf("%T", exp)),
+			// Unreachable for the same reason as above.
+			logger.Warn("exporter does not support metrics and is not a wrappedExporter, dropping metrics",
+				zap.String("exporter_type", expType),
+				zap.Int("metrics_lost", metrics.ResourceMetrics().Len()),
 			)
 		}
 
-		if metricsExp != nil {
-			// Log the resource attributes of metrics being sent to help diagnose routing issues
-			var resourceAttrsList []map[string]string
+		if metricsExp == nil {
+			continue
+		}
+
+		if debug {
+			resourceAttrsList := make([]map[string]string, 0, metrics.ResourceMetrics().Len())
 			for i := 0; i < metrics.ResourceMetrics().Len(); i++ {
-				rm := metrics.ResourceMetrics().At(i)
-				attrs := make(map[string]string)
-				rm.Resource().Attributes().Range(func(k string, v pcommon.Value) bool {
-					attrs[k] = v.AsString()
-					return true
-				})
-				resourceAttrsList = append(resourceAttrsList, attrs)
+				resourceAttrsList = append(resourceAttrsList, attrsToMap(metrics.ResourceMetrics().At(i).Resource().Attributes()))
 			}
-			ec.params.Logger.Debug("sending metrics to exporter",
+			logger.Debug("sending metrics to exporter",
 				zap.Int("resource_metrics_count", metrics.ResourceMetrics().Len()),
 				zap.Any("resource_attributes", resourceAttrsList),
 				zap.String("exporter_type", fmt.Sprintf("%T", metricsExp)),
 			)
-			if err := metricsExp.ConsumeMetrics(ctx, metrics); err != nil {
-				ec.params.Logger.Error("failed to export metrics to exporter",
-					zap.Error(err),
-					zap.String("exporter_type", fmt.Sprintf("%T", metricsExp)),
-					zap.Int("metrics_count", metrics.ResourceMetrics().Len()),
-				)
-				errs = append(errs, fmt.Errorf("failed to export metrics to exporter: %w", err))
-			} else {
-				ec.params.Logger.Debug("successfully exported metrics to exporter",
-					zap.Int("metric_count", metrics.ResourceMetrics().Len()),
-					zap.String("exporter_type", fmt.Sprintf("%T", metricsExp)),
-				)
-			}
-		} else {
-			ec.params.Logger.Info("no metrics exporter available for component",
-				zap.String("component_type", fmt.Sprintf("%T", exp)),
-				zap.Int("metrics_lost", metrics.ResourceMetrics().Len()),
+		}
+
+		if err := metricsExp.ConsumeMetrics(ctx, metrics); err != nil {
+			logger.Error("failed to export metrics to exporter",
+				zap.Error(err),
+				zap.String("exporter_type", fmt.Sprintf("%T", metricsExp)),
+				zap.Int("metrics_count", metrics.ResourceMetrics().Len()),
+			)
+			errs = append(errs, fmt.Errorf("failed to export metrics to exporter: %w", err))
+		} else if debug {
+			logger.Debug("successfully exported metrics to exporter",
+				zap.Int("metric_count", metrics.ResourceMetrics().Len()),
+				zap.String("exporter_type", fmt.Sprintf("%T", metricsExp)),
 			)
 		}
 	}
@@ -379,22 +369,17 @@ func (ec *exporterCreator) ConsumeMetrics(ctx context.Context, md pmetric.Metric
 	// Route unmatched metrics to default exporters
 	nonRoutableCount := int64(0)
 	if unmatchedMetrics.ResourceMetrics().Len() > 0 {
-		// Log unmatched metrics for debugging
-		var unmatchedAttrsList []map[string]string
-		for i := 0; i < unmatchedMetrics.ResourceMetrics().Len(); i++ {
-			rm := unmatchedMetrics.ResourceMetrics().At(i)
-			attrs := make(map[string]string)
-			rm.Resource().Attributes().Range(func(k string, v pcommon.Value) bool {
-				attrs[k] = v.AsString()
-				return true
-			})
-			unmatchedAttrsList = append(unmatchedAttrsList, attrs)
+		if debug {
+			unmatchedAttrsList := make([]map[string]string, 0, unmatchedMetrics.ResourceMetrics().Len())
+			for i := 0; i < unmatchedMetrics.ResourceMetrics().Len(); i++ {
+				unmatchedAttrsList = append(unmatchedAttrsList, attrsToMap(unmatchedMetrics.ResourceMetrics().At(i).Resource().Attributes()))
+			}
+			logger.Debug("processing unmatched metrics",
+				zap.Int("unmatched_resource_metrics", unmatchedMetrics.ResourceMetrics().Len()),
+				zap.Any("unmatched_resource_attributes", unmatchedAttrsList),
+				zap.Int("default_exporters_count", len(ec.defaultExporters)),
+			)
 		}
-		ec.params.Logger.Info("processing unmatched metrics",
-			zap.Int("unmatched_resource_metrics", unmatchedMetrics.ResourceMetrics().Len()),
-			zap.Any("unmatched_resource_attributes", unmatchedAttrsList),
-			zap.Int("default_exporters_count", len(ec.defaultExporters)),
-		)
 
 		if len(ec.defaultExporters) > 0 {
 			hasMetricsExporter := false
@@ -412,36 +397,47 @@ func (ec *exporterCreator) ConsumeMetrics(ctx context.Context, md pmetric.Metric
 			// If no default exporter supports metrics, or export failed, count all unmatched as non-routable
 			if !hasMetricsExporter || !exportSucceeded {
 				nonRoutableCount = countMetricPoints(unmatchedMetrics)
-				ec.params.Logger.Info("counting unmatched metrics as non-routable (no default exporter or export failed)",
-					zap.Int64("non_routable_count", nonRoutableCount),
-					zap.Bool("has_metrics_exporter", hasMetricsExporter),
-					zap.Bool("export_succeeded", exportSucceeded),
-				)
+				// Counted by the non-routable metric; a failed export is separately returned
+				// to the pipeline as an error. Detail here is debug-only to stay off the
+				// per-batch log path.
+				if debug {
+					logger.Debug("unmatched metrics could not be sent to a default exporter",
+						zap.Int64("non_routable_count", nonRoutableCount),
+						zap.Bool("has_metrics_exporter", hasMetricsExporter),
+						zap.Bool("export_succeeded", exportSucceeded),
+					)
+				}
 			}
 		} else {
-			// No default exporters configured, count all unmatched as non-routable
+			// No default exporters configured, count all unmatched as non-routable. This is a
+			// valid configuration, so it is reported by the non-routable metric rather than a log.
 			nonRoutableCount = countMetricPoints(unmatchedMetrics)
-			ec.params.Logger.Info("counting unmatched metrics as non-routable (no default exporters configured)",
-				zap.Int64("non_routable_count", nonRoutableCount),
-			)
+			if debug {
+				logger.Debug("counting unmatched metrics as non-routable (no default exporters configured)",
+					zap.Int64("non_routable_count", nonRoutableCount),
+				)
+			}
 		}
 	}
 
 	// Record non-routable metric points
-	if nonRoutableCount > 0 && ec.telemetry != nil {
-		ec.telemetry.ExporterCreatorNonroutableMetricPointsTotal.Add(ctx, nonRoutableCount)
-		ec.params.Logger.Info("recorded non-routable metric points",
-			zap.Int64("non_routable_count", nonRoutableCount),
-			zap.Int("unmatched_resource_metrics", unmatchedMetrics.ResourceMetrics().Len()),
-		)
-	} else if unmatchedMetrics.ResourceMetrics().Len() > 0 {
-		// Log why non-routable metric wasn't recorded
-		ec.params.Logger.Warn("unmatched metrics found but non-routable metric not recorded",
-			zap.Int("unmatched_resource_metrics", unmatchedMetrics.ResourceMetrics().Len()),
-			zap.Int64("non_routable_count", nonRoutableCount),
-			zap.Int("default_exporters_count", len(ec.defaultExporters)),
-			zap.Bool("telemetry_nil", ec.telemetry == nil),
-		)
+	if nonRoutableCount > 0 {
+		if ec.telemetry != nil {
+			ec.telemetry.ExporterCreatorNonroutableMetricPointsTotal.Add(ctx, nonRoutableCount)
+			if debug {
+				logger.Debug("recorded non-routable metric points",
+					zap.Int64("non_routable_count", nonRoutableCount),
+					zap.Int("unmatched_resource_metrics", unmatchedMetrics.ResourceMetrics().Len()),
+				)
+			}
+		} else {
+			// Without telemetry the drop goes uncounted, so it has to be logged. Unreachable
+			// via newExporterCreator, which fails rather than returning a nil telemetry builder.
+			logger.Warn("dropping non-routable metric points but telemetry is unavailable to record them",
+				zap.Int64("non_routable_count", nonRoutableCount),
+				zap.Int("unmatched_resource_metrics", unmatchedMetrics.ResourceMetrics().Len()),
+			)
+		}
 	}
 
 	if len(errs) > 0 {
@@ -554,4 +550,15 @@ func (ec *exporterCreator) ConsumeTraces(ctx context.Context, td ptrace.Traces) 
 		return multierr.Combine(errs...)
 	}
 	return nil
+}
+
+// attrsToMap renders resource attributes for logging. Callers should check that the log will
+// actually be emitted before calling it.
+func attrsToMap(attrs pcommon.Map) map[string]string {
+	m := make(map[string]string, attrs.Len())
+	attrs.Range(func(k string, v pcommon.Value) bool {
+		m[k] = v.AsString()
+		return true
+	})
+	return m
 }
