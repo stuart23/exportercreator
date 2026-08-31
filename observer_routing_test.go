@@ -12,8 +12,8 @@ import (
 	"go.opentelemetry.io/collector/component/componenttest"
 	"go.opentelemetry.io/collector/pdata/pmetric"
 
-	"github.com/stuart23/exportercreator/internal/metadata"
 	"github.com/open-telemetry/opentelemetry-collector-contrib/extension/observer"
+	"github.com/stuart23/exportercreator/internal/metadata"
 )
 
 // mockJSONFileEndpoint is a mock implementation of JSONFileEndpoint for testing
@@ -135,10 +135,8 @@ func TestExporterCreator_JSONObserverRouting(t *testing.T) {
 	require.Len(t, mr.startedComponents, 2, "Should have two exporters started")
 
 	// Get the created exporters
-	exp1 := handler.exportersByEndpoint[jsonEndpoint1.ID]
-	exp2 := handler.exportersByEndpoint[jsonEndpoint2.ID]
-	require.NotNil(t, exp1, "Exporter 1 should be created")
-	require.NotNil(t, exp2, "Exporter 2 should be created")
+	exp1 := soleExporter(t, handler, jsonEndpoint1.ID)
+	exp2 := soleExporter(t, handler, jsonEndpoint2.ID)
 
 	// Create metrics with resource attributes matching service-a
 	metrics1 := pmetric.NewMetrics()
@@ -289,10 +287,8 @@ func TestExporterCreator_CRDObserverRouting(t *testing.T) {
 	require.Len(t, mr.startedComponents, 2, "Should have two exporters started")
 
 	// Get the created exporters
-	exp1 := handler.exportersByEndpoint[crdEndpoint1.ID]
-	exp2 := handler.exportersByEndpoint[crdEndpoint2.ID]
-	require.NotNil(t, exp1, "Exporter 1 should be created")
-	require.NotNil(t, exp2, "Exporter 2 should be created")
+	exp1 := soleExporter(t, handler, crdEndpoint1.ID)
+	exp2 := soleExporter(t, handler, crdEndpoint2.ID)
 
 	// Create metrics with resource attributes matching app1
 	metrics1 := pmetric.NewMetrics()
@@ -402,7 +398,7 @@ func TestExporterCreator_JSONObserverRouting_MultipleRules(t *testing.T) {
 	assert.Equal(t, 1, len(handler.exportersByEndpoint))
 	require.Len(t, mr.startedComponents, 1)
 
-	exp := handler.exportersByEndpoint[jsonEndpoint.ID]
+	exp := soleExporter(t, handler, jsonEndpoint.ID)
 
 	// Create metrics matching all routing rules
 	metrics := pmetric.NewMetrics()
@@ -492,8 +488,7 @@ func TestExporterCreator_CRDObserverRouting_UnmatchedMetrics(t *testing.T) {
 	handler, _ := newObserverHandler(t, cfg, router)
 	handler.OnAdd([]observer.Endpoint{crdEndpoint})
 
-	exp := handler.exportersByEndpoint[crdEndpoint.ID]
-	require.NotNil(t, exp)
+	exp := soleExporter(t, handler, crdEndpoint.ID)
 
 	// Create metrics with matching attributes
 	metrics1 := pmetric.NewMetrics()

@@ -310,7 +310,7 @@ func newObserverHandler(
 	return &observerHandler{
 		params:              set,
 		config:              config,
-		exportersByEndpoint: make(map[observer.EndpointID]component.Component),
+		exportersByEndpoint: make(exporterMap),
 		router:              router,
 		runner:              mr,
 	}, mr

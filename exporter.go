@@ -92,7 +92,7 @@ func (ec *exporterCreator) Start(ctx context.Context, h component.Host) error {
 	ec.observerHandler = &observerHandler{
 		config:              ec.cfg,
 		params:              ec.params,
-		exportersByEndpoint: make(map[observer.EndpointID]component.Component),
+		exportersByEndpoint: make(exporterMap),
 		router:              ec.router,
 		runner:              newExporterRunner(ec.params, ecHost),
 	}

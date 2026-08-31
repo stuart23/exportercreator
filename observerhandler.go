@@ -30,7 +30,7 @@ type observerHandler struct {
 	sync.Mutex
 	config              *Config
 	params              exporter.Settings
-	exportersByEndpoint map[observer.EndpointID]component.Component
+	exportersByEndpoint exporterMap
 	router              *telemetryRouter
 	runner              runner
 }
@@ -110,16 +110,18 @@ func (oh *observerHandler) onRemoveLocked(removed []observer.Endpoint) {
 			zap.String("endpoint_type", endpointType),
 		)
 
-		if exp, exists := oh.exportersByEndpoint[e.ID]; exists {
-			oh.params.Logger.Info("stopping exporter", zap.String("endpoint_id", string(e.ID)))
+		if exps := oh.exportersByEndpoint.Get(e.ID); len(exps) > 0 {
+			for _, exp := range exps {
+				oh.params.Logger.Info("stopping exporter", zap.String("endpoint_id", string(e.ID)))
 
-			if err := oh.runner.shutdown(exp); err != nil {
-				oh.params.Logger.Error("failed to stop exporter", zap.String("endpoint_id", string(e.ID)), zap.Error(err))
+				if err := oh.runner.shutdown(exp); err != nil {
+					oh.params.Logger.Error("failed to stop exporter", zap.String("endpoint_id", string(e.ID)), zap.Error(err))
+				}
 			}
 
 			// Remove from router
 			oh.router.RemoveExporter(e.ID)
-			delete(oh.exportersByEndpoint, e.ID)
+			oh.exportersByEndpoint.RemoveAll(e.ID)
 		} else {
 			oh.params.Logger.Debug("endpoint removed but no exporter was created for it",
 				zap.String("endpoint_id", string(e.ID)),
@@ -158,9 +160,11 @@ func (oh *observerHandler) shutdown() error {
 
 	var errs []error
 
-	for endpointID, exp := range oh.exportersByEndpoint {
-		if err := oh.runner.shutdown(exp); err != nil {
-			errs = append(errs, fmt.Errorf("endpoint %q: %w", endpointID, err))
+	for endpointID, exps := range oh.exportersByEndpoint {
+		for _, exp := range exps {
+			if err := oh.runner.shutdown(exp); err != nil {
+				errs = append(errs, fmt.Errorf("endpoint %q: %w", endpointID, err))
+			}
 		}
 	}
 
@@ -237,7 +241,7 @@ func (oh *observerHandler) startExporter(template exporterTemplate, env observer
 	}
 
 	// Store the exporter and register it with the router
-	oh.exportersByEndpoint[e.ID] = exporterInstance
+	oh.exportersByEndpoint.Put(e.ID, exporterInstance)
 
 	// Expand ResourceAttributes from the template and merge them into the env for routing
 	routingEnv := make(observer.EndpointEnv)
