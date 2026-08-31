@@ -28,6 +28,26 @@ telemetry:
         value_type: int
         aggregation_temporality: cumulative
         monotonic: true
+    exporter_creator_nonroutable_log_records_total:
+      enabled: true
+      stability:
+        level: development
+      description: Total number of log records that could not be routed to any exporter.
+      unit: "{records}"
+      sum:
+        value_type: int
+        aggregation_temporality: cumulative
+        monotonic: true
+    exporter_creator_nonroutable_spans_total:
+      enabled: true
+      stability:
+        level: development
+      description: Total number of spans that could not be routed to any exporter.
+      unit: "{spans}"
+      sum:
+        value_type: int
+        aggregation_temporality: cumulative
+        monotonic: true
 
 tests:
   skip_lifecycle: true

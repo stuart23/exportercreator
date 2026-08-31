@@ -27,7 +27,9 @@ type TelemetryBuilder struct {
 	mu                                          sync.Mutex
 	registrations                               []metric.Registration
 	ExporterCreatorExportersCount               metric.Int64Gauge
+	ExporterCreatorNonroutableLogRecordsTotal   metric.Int64Counter
 	ExporterCreatorNonroutableMetricPointsTotal metric.Int64Counter
+	ExporterCreatorNonroutableSpansTotal        metric.Int64Counter
 }
 
 // TelemetryBuilderOption applies changes to default builder.
@@ -65,10 +67,22 @@ func NewTelemetryBuilder(settings component.TelemetrySettings, options ...Teleme
 		metric.WithUnit("{exporters}"),
 	)
 	errs = errors.Join(errs, err)
+	builder.ExporterCreatorNonroutableLogRecordsTotal, err = builder.meter.Int64Counter(
+		"otelcol_exporter_creator_nonroutable_log_records_total",
+		metric.WithDescription("Total number of log records that could not be routed to any exporter. [Development]"),
+		metric.WithUnit("{records}"),
+	)
+	errs = errors.Join(errs, err)
 	builder.ExporterCreatorNonroutableMetricPointsTotal, err = builder.meter.Int64Counter(
 		"otelcol_exporter_creator_nonroutable_metric_points_total",
 		metric.WithDescription("Total number of metric points that could not be routed to any exporter. [Development]"),
 		metric.WithUnit("{metric_points}"),
+	)
+	errs = errors.Join(errs, err)
+	builder.ExporterCreatorNonroutableSpansTotal, err = builder.meter.Int64Counter(
+		"otelcol_exporter_creator_nonroutable_spans_total",
+		metric.WithDescription("Total number of spans that could not be routed to any exporter. [Development]"),
+		metric.WithUnit("{spans}"),
 	)
 	errs = errors.Join(errs, err)
 	return &builder, errs

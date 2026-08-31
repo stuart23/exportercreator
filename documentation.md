@@ -14,6 +14,14 @@ Current number of exporters created by the exporter_creator. [Development]
 | ---- | ----------- | ---------- | --------- |
 | {exporters} | Gauge | Int | Development |
 
+### otelcol_exporter_creator_nonroutable_log_records_total
+
+Total number of log records that could not be routed to any exporter. [Development]
+
+| Unit | Metric Type | Value Type | Monotonic | Stability |
+| ---- | ----------- | ---------- | --------- | --------- |
+| {records} | Sum | Int | true | Development |
+
 ### otelcol_exporter_creator_nonroutable_metric_points_total
 
 Total number of metric points that could not be routed to any exporter. [Development]
@@ -21,3 +29,11 @@ Total number of metric points that could not be routed to any exporter. [Develop
 | Unit | Metric Type | Value Type | Monotonic | Stability |
 | ---- | ----------- | ---------- | --------- | --------- |
 | {metric_points} | Sum | Int | true | Development |
+
+### otelcol_exporter_creator_nonroutable_spans_total
+
+Total number of spans that could not be routed to any exporter. [Development]
+
+| Unit | Metric Type | Value Type | Monotonic | Stability |
+| ---- | ----------- | ---------- | --------- | --------- |
+| {spans} | Sum | Int | true | Development |

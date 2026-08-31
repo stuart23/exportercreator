@@ -173,6 +173,7 @@ func (ec *exporterCreator) ConsumeLogs(ctx context.Context, ld plog.Logs) error 
 	}
 
 	var errs []error
+	nonRoutableCount := int64(0)
 	exportersByComponent := make(map[component.Component]plog.Logs)
 	unmatchedLogs := plog.NewLogs()
 
@@ -186,6 +187,7 @@ func (ec *exporterCreator) ConsumeLogs(ctx context.Context, ld plog.Logs) error 
 
 		if len(matchedExporters) > 0 {
 			// Route to matched exporters
+			accepted := false
 			for _, exp := range matchedExporters {
 				var logsExp exporter.Logs
 				// Check if it's a wrappedExporter and extract the logs exporter
@@ -195,12 +197,21 @@ func (ec *exporterCreator) ConsumeLogs(ctx context.Context, ld plog.Logs) error 
 					logsExp = le
 				}
 
-				if logsExp != nil {
-					if _, exists := exportersByComponent[exp]; !exists {
-						exportersByComponent[exp] = plog.NewLogs()
-					}
-					rl.CopyTo(exportersByComponent[exp].ResourceLogs().AppendEmpty())
+				if logsExp == nil {
+					// The exporter this endpoint resolves to cannot handle logs, as a
+					// metrics-only exporter cannot. Routing already matched, so this would
+					// otherwise be dropped without reaching the default exporters.
+					ec.warnUnsupportedSignal(exp, "logs")
+					continue
 				}
+				accepted = true
+				if _, exists := exportersByComponent[exp]; !exists {
+					exportersByComponent[exp] = plog.NewLogs()
+				}
+				rl.CopyTo(exportersByComponent[exp].ResourceLogs().AppendEmpty())
+			}
+			if !accepted {
+				nonRoutableCount += countResourceLogRecords(rl)
 			}
 		} else {
 			// No match, add to unmatched
@@ -226,14 +237,26 @@ func (ec *exporterCreator) ConsumeLogs(ctx context.Context, ld plog.Logs) error 
 	}
 
 	// Route unmatched logs to default exporters
-	if unmatchedLogs.ResourceLogs().Len() > 0 && len(ec.defaultExporters) > 0 {
+	if unmatchedLogs.ResourceLogs().Len() > 0 {
+		hasLogsExporter := false
+		exportSucceeded := false
 		for _, defaultExp := range ec.defaultExporters {
 			if logsExp, ok := defaultExp.(exporter.Logs); ok {
+				hasLogsExporter = true
 				if err := logsExp.ConsumeLogs(ctx, unmatchedLogs); err != nil {
 					errs = append(errs, fmt.Errorf("failed to export logs to default exporter: %w", err))
+				} else {
+					exportSucceeded = true
 				}
 			}
 		}
+		if !hasLogsExporter || !exportSucceeded {
+			nonRoutableCount += countLogRecords(unmatchedLogs)
+		}
+	}
+
+	if nonRoutableCount > 0 && ec.telemetry != nil {
+		ec.telemetry.ExporterCreatorNonroutableLogRecordsTotal.Add(ctx, nonRoutableCount)
 	}
 
 	if len(errs) > 0 {
@@ -255,6 +278,9 @@ func (ec *exporterCreator) ConsumeMetrics(ctx context.Context, md pmetric.Metric
 	debug := logger.Core().Enabled(zapcore.DebugLevel)
 
 	var errs []error
+	// unroutableBySignal counts points whose endpoint matched an exporter that cannot handle
+	// metrics. They never reach the unmatched set, so they are accounted for separately.
+	unroutableBySignal := int64(0)
 	exportersByComponent := make(map[component.Component]pmetric.Metrics)
 	unmatchedMetrics := pmetric.NewMetrics()
 
@@ -268,6 +294,7 @@ func (ec *exporterCreator) ConsumeMetrics(ctx context.Context, md pmetric.Metric
 
 		if len(matchedExporters) > 0 {
 			// Route to matched exporters
+			accepted := false
 			for _, exp := range matchedExporters {
 				var metricsExp exporter.Metrics
 				// Check if it's a wrappedExporter and extract the metrics exporter
@@ -277,18 +304,24 @@ func (ec *exporterCreator) ConsumeMetrics(ctx context.Context, md pmetric.Metric
 					metricsExp = me
 				}
 
-				if metricsExp != nil {
-					if _, exists := exportersByComponent[exp]; !exists {
-						exportersByComponent[exp] = pmetric.NewMetrics()
-					}
-					if debug {
-						logger.Debug("adding ResourceMetrics to exporter",
-							zap.String("exporter_type", fmt.Sprintf("%T", exp)),
-							zap.Any("resource_attributes", attrsToMap(resourceAttrs)),
-						)
-					}
-					rm.CopyTo(exportersByComponent[exp].ResourceMetrics().AppendEmpty())
+				if metricsExp == nil {
+					ec.warnUnsupportedSignal(exp, "metrics")
+					continue
 				}
+				accepted = true
+				if _, exists := exportersByComponent[exp]; !exists {
+					exportersByComponent[exp] = pmetric.NewMetrics()
+				}
+				if debug {
+					logger.Debug("adding ResourceMetrics to exporter",
+						zap.String("exporter_type", fmt.Sprintf("%T", exp)),
+						zap.Any("resource_attributes", attrsToMap(resourceAttrs)),
+					)
+				}
+				rm.CopyTo(exportersByComponent[exp].ResourceMetrics().AppendEmpty())
+			}
+			if !accepted {
+				unroutableBySignal += countResourceMetricPoints(rm)
 			}
 		} else {
 			// No match, add to unmatched. Per-resource detail is debug-only; the aggregate
@@ -367,7 +400,7 @@ func (ec *exporterCreator) ConsumeMetrics(ctx context.Context, md pmetric.Metric
 	}
 
 	// Route unmatched metrics to default exporters
-	nonRoutableCount := int64(0)
+	nonRoutableCount := unroutableBySignal
 	if unmatchedMetrics.ResourceMetrics().Len() > 0 {
 		if debug {
 			unmatchedAttrsList := make([]map[string]string, 0, unmatchedMetrics.ResourceMetrics().Len())
@@ -450,28 +483,7 @@ func (ec *exporterCreator) ConsumeMetrics(ctx context.Context, md pmetric.Metric
 func countMetricPoints(md pmetric.Metrics) int64 {
 	var count int64
 	for i := 0; i < md.ResourceMetrics().Len(); i++ {
-		rm := md.ResourceMetrics().At(i)
-		for j := 0; j < rm.ScopeMetrics().Len(); j++ {
-			sm := rm.ScopeMetrics().At(j)
-			for k := 0; k < sm.Metrics().Len(); k++ {
-				metric := sm.Metrics().At(k)
-				//exhaustive:enforce
-				switch metric.Type() {
-				case pmetric.MetricTypeGauge:
-					count += int64(metric.Gauge().DataPoints().Len())
-				case pmetric.MetricTypeSum:
-					count += int64(metric.Sum().DataPoints().Len())
-				case pmetric.MetricTypeHistogram:
-					count += int64(metric.Histogram().DataPoints().Len())
-				case pmetric.MetricTypeExponentialHistogram:
-					count += int64(metric.ExponentialHistogram().DataPoints().Len())
-				case pmetric.MetricTypeSummary:
-					count += int64(metric.Summary().DataPoints().Len())
-				case pmetric.MetricTypeEmpty:
-					// Empty metrics have no data points
-				}
-			}
-		}
+		count += countResourceMetricPoints(md.ResourceMetrics().At(i))
 	}
 	return count
 }
@@ -483,6 +495,7 @@ func (ec *exporterCreator) ConsumeTraces(ctx context.Context, td ptrace.Traces) 
 	}
 
 	var errs []error
+	nonRoutableCount := int64(0)
 	exportersByComponent := make(map[component.Component]ptrace.Traces)
 	unmatchedTraces := ptrace.NewTraces()
 
@@ -496,6 +509,7 @@ func (ec *exporterCreator) ConsumeTraces(ctx context.Context, td ptrace.Traces) 
 
 		if len(matchedExporters) > 0 {
 			// Route to matched exporters
+			accepted := false
 			for _, exp := range matchedExporters {
 				var tracesExp exporter.Traces
 				// Check if it's a wrappedExporter and extract the traces exporter
@@ -505,12 +519,18 @@ func (ec *exporterCreator) ConsumeTraces(ctx context.Context, td ptrace.Traces) 
 					tracesExp = te
 				}
 
-				if tracesExp != nil {
-					if _, exists := exportersByComponent[exp]; !exists {
-						exportersByComponent[exp] = ptrace.NewTraces()
-					}
-					rs.CopyTo(exportersByComponent[exp].ResourceSpans().AppendEmpty())
+				if tracesExp == nil {
+					ec.warnUnsupportedSignal(exp, "traces")
+					continue
 				}
+				accepted = true
+				if _, exists := exportersByComponent[exp]; !exists {
+					exportersByComponent[exp] = ptrace.NewTraces()
+				}
+				rs.CopyTo(exportersByComponent[exp].ResourceSpans().AppendEmpty())
+			}
+			if !accepted {
+				nonRoutableCount += countResourceSpans(rs)
 			}
 		} else {
 			// No match, add to unmatched
@@ -536,14 +556,26 @@ func (ec *exporterCreator) ConsumeTraces(ctx context.Context, td ptrace.Traces) 
 	}
 
 	// Route unmatched traces to default exporters
-	if unmatchedTraces.ResourceSpans().Len() > 0 && len(ec.defaultExporters) > 0 {
+	if unmatchedTraces.ResourceSpans().Len() > 0 {
+		hasTracesExporter := false
+		exportSucceeded := false
 		for _, defaultExp := range ec.defaultExporters {
 			if tracesExp, ok := defaultExp.(exporter.Traces); ok {
+				hasTracesExporter = true
 				if err := tracesExp.ConsumeTraces(ctx, unmatchedTraces); err != nil {
 					errs = append(errs, fmt.Errorf("failed to export traces to default exporter: %w", err))
+				} else {
+					exportSucceeded = true
 				}
 			}
 		}
+		if !hasTracesExporter || !exportSucceeded {
+			nonRoutableCount += countSpans(unmatchedTraces)
+		}
+	}
+
+	if nonRoutableCount > 0 && ec.telemetry != nil {
+		ec.telemetry.ExporterCreatorNonroutableSpansTotal.Add(ctx, nonRoutableCount)
 	}
 
 	if len(errs) > 0 {
@@ -561,4 +593,81 @@ func attrsToMap(attrs pcommon.Map) map[string]string {
 		return true
 	})
 	return m
+}
+
+// warnUnsupportedSignal reports, once per exporter and signal, that telemetry matched an
+// exporter which cannot handle it. The telemetry is counted as non-routable either way; the
+// warning names the exporter so the mismatch can be traced back to a template.
+func (ec *exporterCreator) warnUnsupportedSignal(exp component.Component, signal string) {
+	we, ok := exp.(*wrappedExporter)
+	if !ok || !we.firstUnsupported(signal) {
+		return
+	}
+	ec.params.Logger.Warn("matched exporter does not handle this signal, dropping telemetry",
+		zap.String("signal", signal),
+		zap.String("exporter_type", fmt.Sprintf("%T", exp)),
+	)
+}
+
+// countLogRecords counts the total number of log records in a plog.Logs.
+func countLogRecords(ld plog.Logs) int64 {
+	var count int64
+	for i := 0; i < ld.ResourceLogs().Len(); i++ {
+		count += countResourceLogRecords(ld.ResourceLogs().At(i))
+	}
+	return count
+}
+
+// countSpans counts the total number of spans in a ptrace.Traces.
+func countSpans(td ptrace.Traces) int64 {
+	var count int64
+	for i := 0; i < td.ResourceSpans().Len(); i++ {
+		count += countResourceSpans(td.ResourceSpans().At(i))
+	}
+	return count
+}
+
+// countResourceLogRecords counts the log records in a single ResourceLogs.
+func countResourceLogRecords(rl plog.ResourceLogs) int64 {
+	var count int64
+	for i := 0; i < rl.ScopeLogs().Len(); i++ {
+		count += int64(rl.ScopeLogs().At(i).LogRecords().Len())
+	}
+	return count
+}
+
+// countResourceSpans counts the spans in a single ResourceSpans.
+func countResourceSpans(rs ptrace.ResourceSpans) int64 {
+	var count int64
+	for i := 0; i < rs.ScopeSpans().Len(); i++ {
+		count += int64(rs.ScopeSpans().At(i).Spans().Len())
+	}
+	return count
+}
+
+// countResourceMetricPoints counts the data points in a single ResourceMetrics.
+func countResourceMetricPoints(rm pmetric.ResourceMetrics) int64 {
+	var count int64
+	for i := 0; i < rm.ScopeMetrics().Len(); i++ {
+		sm := rm.ScopeMetrics().At(i)
+		for j := 0; j < sm.Metrics().Len(); j++ {
+			metric := sm.Metrics().At(j)
+			//exhaustive:enforce
+			switch metric.Type() {
+			case pmetric.MetricTypeGauge:
+				count += int64(metric.Gauge().DataPoints().Len())
+			case pmetric.MetricTypeSum:
+				count += int64(metric.Sum().DataPoints().Len())
+			case pmetric.MetricTypeHistogram:
+				count += int64(metric.Histogram().DataPoints().Len())
+			case pmetric.MetricTypeExponentialHistogram:
+				count += int64(metric.ExponentialHistogram().DataPoints().Len())
+			case pmetric.MetricTypeSummary:
+				count += int64(metric.Summary().DataPoints().Len())
+			case pmetric.MetricTypeEmpty:
+				// Empty metrics have no data points
+			}
+		}
+	}
+	return count
 }

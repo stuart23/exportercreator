@@ -20,11 +20,19 @@ func TestSetupTelemetry(t *testing.T) {
 	require.NoError(t, err)
 	defer tb.Shutdown()
 	tb.ExporterCreatorExportersCount.Record(context.Background(), 1)
+	tb.ExporterCreatorNonroutableLogRecordsTotal.Add(context.Background(), 1)
 	tb.ExporterCreatorNonroutableMetricPointsTotal.Add(context.Background(), 1)
+	tb.ExporterCreatorNonroutableSpansTotal.Add(context.Background(), 1)
 	AssertEqualExporterCreatorExportersCount(t, testTel,
 		[]metricdata.DataPoint[int64]{{Value: 1}},
 		metricdatatest.IgnoreTimestamp())
+	AssertEqualExporterCreatorNonroutableLogRecordsTotal(t, testTel,
+		[]metricdata.DataPoint[int64]{{Value: 1}},
+		metricdatatest.IgnoreTimestamp())
 	AssertEqualExporterCreatorNonroutableMetricPointsTotal(t, testTel,
+		[]metricdata.DataPoint[int64]{{Value: 1}},
+		metricdatatest.IgnoreTimestamp())
+	AssertEqualExporterCreatorNonroutableSpansTotal(t, testTel,
 		[]metricdata.DataPoint[int64]{{Value: 1}},
 		metricdatatest.IgnoreTimestamp())
 

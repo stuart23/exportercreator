@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"sync"
+	"sync/atomic"
 
 	"github.com/spf13/cast"
 	"go.opentelemetry.io/collector/component"
@@ -239,6 +240,27 @@ type wrappedExporter struct {
 	logs    exp.Logs
 	metrics exp.Metrics
 	traces  exp.Traces
+
+	// warned records whether the unsupported-signal warning has already been emitted for each
+	// signal. Whether an exporter handles a signal is fixed when it is created, so the mismatch
+	// is worth reporting once rather than on every export.
+	warnedLogs    atomic.Bool
+	warnedMetrics atomic.Bool
+	warnedTraces  atomic.Bool
+}
+
+// firstUnsupported reports whether this is the first time the exporter has been asked for a
+// signal it does not handle.
+func (w *wrappedExporter) firstUnsupported(signal string) bool {
+	switch signal {
+	case "logs":
+		return !w.warnedLogs.Swap(true)
+	case "metrics":
+		return !w.warnedMetrics.Swap(true)
+	case "traces":
+		return !w.warnedTraces.Swap(true)
+	}
+	return false
 }
 
 func (w *wrappedExporter) Start(ctx context.Context, host component.Host) error {
