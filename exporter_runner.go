@@ -154,9 +154,6 @@ func (*exporterRunner) loadRuntimeExporterConfig(
 // setting the `endpoint` field from the discovered one if 1. not specified by the user
 // and 2. determined to be supported (by trial and error of unmarshalling a temp intermediary).
 func mergeTemplatedAndDiscoveredConfigs(factory exp.Factory, templated, discovered userConfigMap) (*confmap.Conf, string, error) {
-	const endpointConfigKey = "endpoint"
-	const tmpSetEndpointConfigKey = "<tmp.exporter.creator.automatically.set.endpoint.field>"
-
 	targetEndpoint := cast.ToString(templated[endpointConfigKey])
 
 	// Check if template has an endpoint configured
@@ -243,9 +240,9 @@ type wrappedExporter struct {
 
 func (w *wrappedExporter) Start(ctx context.Context, host component.Host) error {
 	var err error
-	for _, e := range []component.Component{w.logs, w.metrics, w.traces} {
-		if e != nil {
-			if e := e.Start(ctx, host); e != nil {
+	for _, x := range []component.Component{w.logs, w.metrics, w.traces} {
+		if x != nil {
+			if e := x.Start(ctx, host); e != nil {
 				err = multierr.Combine(err, e)
 			}
 		}
@@ -255,9 +252,9 @@ func (w *wrappedExporter) Start(ctx context.Context, host component.Host) error 
 
 func (w *wrappedExporter) Shutdown(ctx context.Context) error {
 	var err error
-	for _, e := range []component.Component{w.logs, w.metrics, w.traces} {
-		if e != nil {
-			if e := e.Shutdown(ctx); e != nil {
+	for _, x := range []component.Component{w.logs, w.metrics, w.traces} {
+		if x != nil {
+			if e := x.Shutdown(ctx); e != nil {
 				err = multierr.Combine(err, e)
 			}
 		}
