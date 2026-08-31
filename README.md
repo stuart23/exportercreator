@@ -6,7 +6,7 @@
 | Stability     | [development]: logs, metrics, traces   |
 | Distributions | [] |
 | Issues        | [![Open issues](https://img.shields.io/github/issues-search/open-telemetry/opentelemetry-collector-contrib?query=is%3Aissue%20is%3Aopen%20label%3Aexporter%2Fexportercreator%20&label=open&color=orange&logo=opentelemetry)](https://github.com/open-telemetry/opentelemetry-collector-contrib/issues?q=is%3Aopen+is%3Aissue+label%3Aexporter%2Fexportercreator) [![Closed issues](https://img.shields.io/github/issues-search/open-telemetry/opentelemetry-collector-contrib?query=is%3Aissue%20is%3Aclosed%20label%3Aexporter%2Fexportercreator%20&label=closed&color=blue&logo=opentelemetry)](https://github.com/open-telemetry/opentelemetry-collector-contrib/issues?q=is%3Aclosed+is%3Aissue+label%3Aexporter%2Fexportercreator) |
-| Code coverage | [![codecov](https://codecov.io/github/open-telemetry/opentelemetry-collector-contrib/graph/main/badge.svg?component=exporter_exporter_creator)](https://app.codecov.io/gh/open-telemetry/opentelemetry-collector-contrib/tree/main/?components%5B0%5D=exporter_exporter_creator&displayType=list) |
+| Code coverage | [![codecov](https://codecov.io/github/open-telemetry/opentelemetry-collector-contrib/graph/main/badge.svg?component=exporter_exportercreator)](https://app.codecov.io/gh/open-telemetry/opentelemetry-collector-contrib/tree/main/?components%5B0%5D=exporter_exportercreator&displayType=list) |
 | [Code Owners](https://github.com/open-telemetry/opentelemetry-collector-contrib/blob/main/CONTRIBUTING.md#becoming-a-code-owner)    | [@stu](https://www.github.com/stu) |
 
 [development]: https://github.com/open-telemetry/opentelemetry-collector/blob/main/docs/component-stability.md#development
@@ -175,3 +175,17 @@ go test ./...
 ```
 
 `go test ./...` uses the published observer module from the proxy; no local contrib checkout is required.
+
+### Regenerating metadata
+
+`documentation.md`, `README.md`'s status table and everything under `internal/metadata` are
+generated from `metadata.yaml` by `mdatagen`, pinned to **v0.159.0** and verified in CI.
+
+It cannot be installed with `go install`, because its `go.mod` carries replace directives. Build
+it from a collector checkout:
+
+```bash
+git clone --depth 1 --branch v0.159.0 https://github.com/open-telemetry/opentelemetry-collector.git
+(cd opentelemetry-collector/cmd/mdatagen && go build -o "$(go env GOPATH)/bin/mdatagen" .)
+mdatagen metadata.yaml
+```

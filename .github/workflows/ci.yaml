@@ -24,6 +24,18 @@ jobs:
           go mod tidy
           git diff --exit-code go.mod go.sum
 
+      - name: Check generated metadata is up to date
+        env:
+          MDATAGEN_VERSION: v0.159.0
+        run: |
+          # mdatagen cannot be `go install`ed: its go.mod carries replace directives, so it
+          # has to be built from a collector checkout.
+          git clone --depth 1 --branch "$MDATAGEN_VERSION" \
+            https://github.com/open-telemetry/opentelemetry-collector.git "$RUNNER_TEMP/collector"
+          (cd "$RUNNER_TEMP/collector/cmd/mdatagen" && go build -o "$RUNNER_TEMP/mdatagen" .)
+          "$RUNNER_TEMP/mdatagen" metadata.yaml
+          git diff --exit-code
+
       - name: Unit tests
         # -race: the router is written to from observer callbacks while the export
         # path reads it, and an unsynchronized read there is invisible without it.

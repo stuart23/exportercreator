@@ -8,7 +8,7 @@ The following telemetry is emitted by this component.
 
 ### otelcol_exporter_creator_exporters_count
 
-Current number of exporters created by the exporter_creator. [Development]
+Current number of exporters created by the exporter_creator.
 
 | Unit | Metric Type | Value Type | Stability |
 | ---- | ----------- | ---------- | --------- |
@@ -16,7 +16,7 @@ Current number of exporters created by the exporter_creator. [Development]
 
 ### otelcol_exporter_creator_nonroutable_log_records_total
 
-Total number of log records that could not be routed to any exporter. [Development]
+Total number of log records that could not be routed to any exporter.
 
 | Unit | Metric Type | Value Type | Monotonic | Stability |
 | ---- | ----------- | ---------- | --------- | --------- |
@@ -24,7 +24,7 @@ Total number of log records that could not be routed to any exporter. [Developme
 
 ### otelcol_exporter_creator_nonroutable_metric_points_total
 
-Total number of metric points that could not be routed to any exporter. [Development]
+Total number of metric points that could not be routed to any exporter.
 
 | Unit | Metric Type | Value Type | Monotonic | Stability |
 | ---- | ----------- | ---------- | --------- | --------- |
@@ -32,7 +32,7 @@ Total number of metric points that could not be routed to any exporter. [Develop
 
 ### otelcol_exporter_creator_nonroutable_spans_total
 
-Total number of spans that could not be routed to any exporter. [Development]
+Total number of spans that could not be routed to any exporter.
 
 | Unit | Metric Type | Value Type | Monotonic | Stability |
 | ---- | ----------- | ---------- | --------- | --------- |
