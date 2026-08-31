@@ -4,6 +4,8 @@
 package exportercreator
 
 import (
+	"fmt"
+	"sync"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -11,9 +13,10 @@ import (
 	"go.opentelemetry.io/collector/component"
 	"go.opentelemetry.io/collector/component/componenttest"
 	"go.opentelemetry.io/collector/pdata/pcommon"
+	"go.uber.org/zap"
 
-	"github.com/stuart23/exportercreator/internal/metadata"
 	"github.com/open-telemetry/opentelemetry-collector-contrib/extension/observer"
+	"github.com/stuart23/exportercreator/internal/metadata"
 )
 
 // nopExporterComponent is a simple exporter component for testing
@@ -250,4 +253,44 @@ func TestTelemetryRouter_Route_WithCRDSpec(t *testing.T) {
 	resourceAttrs2.PutStr("generator", "beta")
 	matched2 := router.Route(resourceAttrs2)
 	assert.Len(t, matched2, 0, "Should not match with generator=beta")
+}
+
+// Route logs the exporter count before it takes r.mu, so that count must come from the
+// locking Count. countLocked iterates the exporters map, which the runtime kills the process
+// for ("concurrent map iteration and map write") when an observer callback adds or removes an
+// endpoint at the same time - and routing runs concurrently with those callbacks in production.
+func TestTelemetryRouter_RouteConcurrentWithEndpointChurn(t *testing.T) {
+	telemetry, err := metadata.NewTelemetryBuilder(componenttest.NewNopTelemetrySettings())
+	require.NoError(t, err)
+	router := newTelemetryRouter([]RoutingRule{
+		{ResourceAttribute: "k8s.pod.labels.app", EndpointProperty: "labels.app"},
+	}, telemetry)
+	// The debug log that reads the count is only built when a logger is set.
+	router.setLogger(zap.NewNop())
+
+	attrs := pcommon.NewMap()
+	attrs.PutStr("k8s.pod.labels.app", "test")
+
+	const iterations = 2000
+	var wg sync.WaitGroup
+	wg.Add(2)
+
+	go func() {
+		defer wg.Done()
+		for i := 0; i < iterations; i++ {
+			router.Route(attrs)
+		}
+	}()
+
+	go func() {
+		defer wg.Done()
+		env := observer.EndpointEnv{"labels": map[string]string{"app": "test"}}
+		for i := 0; i < iterations; i++ {
+			id := observer.EndpointID(fmt.Sprintf("endpoint-%d", i))
+			router.AddExporter(id, &nopExporterComponent{}, env)
+			router.RemoveExporter(id)
+		}
+	}()
+
+	wg.Wait()
 }

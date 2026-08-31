@@ -25,7 +25,9 @@ jobs:
           git diff --exit-code go.mod go.sum
 
       - name: Unit tests
-        run: go test ./...
+        # -race: the router is written to from observer callbacks while the export
+        # path reads it, and an unsynchronized read there is invisible without it.
+        run: go test -race ./...
 
       - name: Lint
         uses: golangci/golangci-lint-action@v7

@@ -92,7 +92,9 @@ func (r *telemetryRouter) Route(resourceAttrs pcommon.Map) []component.Component
 		r.logger.Debug("routing metrics",
 			zap.Any("resource_attributes", resourceAttrsMap),
 			zap.Int("routing_rules", len(r.rules)),
-			zap.Int("available_exporters", r.countLocked()),
+			// Count, not countLocked: this runs before Route takes r.mu, and
+			// countLocked iterates the exporters map.
+			zap.Int("available_exporters", r.Count()),
 		)
 	}
 
