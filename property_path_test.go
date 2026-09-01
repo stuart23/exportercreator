@@ -170,3 +170,74 @@ func TestConfig_AcceptsBracketedEndpointProperty(t *testing.T) {
 	require.Len(t, cfg.Routing.Rules, 1)
 	assert.Equal(t, `pod.labels["app.kubernetes.io/name"]`, cfg.Routing.Rules[0].EndpointProperty)
 }
+
+// A resource attribute is a flat name, so brackets in it are punctuation rather than structure:
+// they mark where the prefix ends and the label key begins, and resolve to the same name.
+func TestResolveAttributeName(t *testing.T) {
+	for _, tc := range []struct{ name, configured, want string }{
+		{"plain name, unchanged", "k8s.pod.labels.app", "k8s.pod.labels.app"},
+		{"bracketed label key", `k8s.pod.labels["app.kubernetes.io/name"]`, "k8s.pod.labels.app.kubernetes.io/name"},
+		{"bracketing changes nothing else", `k8s.pod.labels["app"]`, "k8s.pod.labels.app"},
+		{"no dots at all", "service.name", "service.name"},
+		{"chained brackets", `a["b.c"]["d.e"]`, "a.b.c.d.e"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := resolveAttributeName(tc.configured)
+			require.NoError(t, err)
+			assert.Equal(t, tc.want, got)
+		})
+	}
+}
+
+// Both spellings name the same attribute, so both route the same telemetry. This is the point:
+// the bracketed one is legible and the plain one keeps working.
+func TestRoute_BothAttributeSpellingsMatchTheSameTelemetry(t *testing.T) {
+	for _, spelling := range []string{
+		"k8s.pod.labels.app.kubernetes.io/name",
+		`k8s.pod.labels["app.kubernetes.io/name"]`,
+	} {
+		t.Run(spelling, func(t *testing.T) {
+			tt := componenttest.NewTelemetry()
+			telemetry, err := metadata.NewTelemetryBuilder(tt.NewTelemetrySettings())
+			require.NoError(t, err)
+			defer telemetry.Shutdown()
+
+			router := newTelemetryRouter([]RoutingRule{{
+				ResourceAttribute: spelling,
+				EndpointProperty:  `pod.labels["app.kubernetes.io/name"]`,
+			}}, telemetry)
+
+			e := observer.Endpoint{ID: "port-1", Target: "10.0.0.5:4317", Details: &observer.Port{
+				Name: "otlp", Port: 4317, Pod: observer.Pod{Name: "checkout-1",
+					Labels: map[string]string{"app.kubernetes.io/name": "checkout"}}}}
+			env, err := e.Env()
+			require.NoError(t, err)
+			router.AddExporter(e.ID, &nopExporterComponent{}, env, "otlp")
+
+			// The attribute on the telemetry carries the flat name either way.
+			attrs := pcommon.NewMap()
+			attrs.PutStr("k8s.pod.labels.app.kubernetes.io/name", "checkout")
+			assert.Len(t, router.Route(attrs), 1)
+
+			other := pcommon.NewMap()
+			other.PutStr("k8s.pod.labels.app.kubernetes.io/name", "billing")
+			assert.Empty(t, router.Route(other))
+		})
+	}
+}
+
+// An unparseable bracketed attribute is rejected when the configuration is read, like an
+// unparseable endpoint property.
+func TestConfig_RejectsUnparseableResourceAttribute(t *testing.T) {
+	cfg := createDefaultConfig().(*Config)
+	err := cfg.Unmarshal(confmap.NewFromStringMap(map[string]any{
+		"routing": map[string]any{
+			"rules": []any{map[string]any{
+				"resource_attribute": `k8s.pod.labels["app.kubernetes.io/name"`,
+				"endpoint_property":  "pod.labels.app",
+			}},
+		},
+	}))
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "resource_attribute")
+}

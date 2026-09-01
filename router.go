@@ -51,8 +51,20 @@ type routedExporter struct {
 
 // newTelemetryRouter creates a new telemetry router with the given routing rules.
 func newTelemetryRouter(rules []RoutingRule, telemetry *metadata.TelemetryBuilder) *telemetryRouter {
+	// Resolve each rule's attribute spelling once. Config.Unmarshal has already rejected one
+	// that does not parse; a router built another way falls back to the spelling as given.
+	resolved := make([]RoutingRule, len(rules))
+	for i, rule := range rules {
+		resolved[i] = rule
+		if name, err := resolveAttributeName(rule.ResourceAttribute); err == nil {
+			resolved[i].attributeName = name
+		} else {
+			resolved[i].attributeName = rule.ResourceAttribute
+		}
+	}
+
 	return &telemetryRouter{
-		rules:     rules,
+		rules:     resolved,
 		exporters: make(map[observer.EndpointID][]*routedExporter),
 		byType:    map[string]int{},
 		telemetry: telemetry,
@@ -255,7 +267,7 @@ func (r *telemetryRouter) matchesAllRules(resourceAttrs pcommon.Map, properties 
 	debug := r.logger != nil && r.logger.Core().Enabled(zapcore.DebugLevel)
 	for _, rule := range r.rules {
 		// Get the resource attribute value
-		attrVal, ok := resourceAttrs.Get(rule.ResourceAttribute)
+		attrVal, ok := resourceAttrs.Get(rule.attributeName)
 		if !ok {
 			if debug {
 				r.logger.Debug("routing rule failed: resource attribute not found in telemetry",
@@ -452,6 +464,30 @@ func parseBracketedKey(path string, i int) (string, int, error) {
 		}
 	}
 	return "", 0, fmt.Errorf("unterminated quote in %q", path[i:])
+}
+
+// resolveAttributeName turns the configured spelling of a resource attribute into the attribute
+// name to look up.
+//
+// A resource attribute is a flat name, not a path: k8sattributes emits one attribute called
+// "k8s.pod.labels.app.kubernetes.io/name", and nothing is nested. Written out it is a run of
+// dots with no way to see where the prefix ends and the label key begins, so the same bracket
+// form the endpoint side uses is accepted as an alternative spelling of the same name:
+//
+//	k8s.pod.labels["app.kubernetes.io/name"]   is  k8s.pod.labels.app.kubernetes.io/name
+//
+// The brackets are punctuation, not structure: the segments are joined back with dots. A
+// spelling with no bracket in it is the attribute name verbatim, which is what every
+// configuration written before this used.
+func resolveAttributeName(configured string) (string, error) {
+	if !strings.ContainsRune(configured, '[') {
+		return configured, nil
+	}
+	segments, err := parsePropertyPath(configured)
+	if err != nil {
+		return "", err
+	}
+	return strings.Join(segments, "."), nil
 }
 
 // getNestedProperty retrieves a nested property by path, e.g. "labels.app", "spec.region" or

@@ -137,3 +137,28 @@ func TestREADMEExamples_RejectedFormsAreRejected(t *testing.T) {
 		}
 	}
 }
+
+// The README shows a resource attribute written both ways and says they name the same
+// attribute. That equivalence is the whole reason the bracketed spelling is safe to prefer, so
+// it is checked rather than asserted in prose.
+func TestREADMEExamples_AttributeSpellingsAreEquivalent(t *testing.T) {
+	for _, pair := range [][2]string{
+		{`k8s.pod.labels["app.kubernetes.io/name"]`, "k8s.pod.labels.app.kubernetes.io/name"},
+		{`k8s.pod.labels["app"]`, "k8s.pod.labels.app"},
+	} {
+		bracketed, err := resolveAttributeName(pair[0])
+		if err != nil {
+			t.Errorf("%q does not resolve: %v", pair[0], err)
+			continue
+		}
+		plain, err := resolveAttributeName(pair[1])
+		if err != nil {
+			t.Errorf("%q does not resolve: %v", pair[1], err)
+			continue
+		}
+		if bracketed != plain {
+			t.Errorf("%q resolves to %q, %q to %q; the README says they are the same attribute",
+				pair[0], bracketed, pair[1], plain)
+		}
+	}
+}
