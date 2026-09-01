@@ -66,6 +66,9 @@ func TestParsePropertyPath_Rejects(t *testing.T) {
 		// these too; accepting them would make labels.["a"] a second spelling of labels["a"].
 		{"dot then bracket", `labels.["a.b"]`},
 		{"dot then bracket, nested", `pod.labels.["a"]`},
+		// The dot follows a bracketed key rather than a name here, which reaches the check
+		// from the other branch of the loop.
+		{"dot then bracket, after a key", `labels["a"].["b"]`},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			_, err := parsePropertyPath(tc.path)
@@ -269,6 +272,27 @@ func TestResolveAttributeName_BracketIsSignificant(t *testing.T) {
 			}
 			require.NoError(t, err)
 			assert.Equal(t, tc.lookedUp, got)
+		})
+	}
+}
+
+// The complaint about labels.["a.b"] was that it passed startup validation, so the faithful
+// test is at that level rather than only against the parser: a rule naming one must not get as
+// far as a running collector.
+func TestConfig_RejectsDotThenBracketPath(t *testing.T) {
+	for _, path := range []string{`labels.["a.b"]`, `pod.labels.["a"]`, `labels["a"].["b"]`} {
+		t.Run(path, func(t *testing.T) {
+			cfg := createDefaultConfig().(*Config)
+			err := cfg.Unmarshal(confmap.NewFromStringMap(map[string]any{
+				"routing": map[string]any{
+					"rules": []any{map[string]any{
+						"resource_attribute": "k8s.pod.labels.app",
+						"endpoint_property":  path,
+					}},
+				},
+			}))
+			require.Error(t, err, "%q should not survive startup validation", path)
+			assert.Contains(t, err.Error(), "endpoint_property")
 		})
 	}
 }
