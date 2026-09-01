@@ -62,6 +62,10 @@ func TestParsePropertyPath_Rejects(t *testing.T) {
 		{"integer index", "labels[0]"},
 		{"path starting with a bracket", `["a.b"].c`},
 		{"unsupported escape", `labels["a\nb"]`},
+		// A dot separates named segments, so there is a name missing after it. OTTL rejects
+		// these too; accepting them would make labels.["a"] a second spelling of labels["a"].
+		{"dot then bracket", `labels.["a.b"]`},
+		{"dot then bracket, nested", `pod.labels.["a"]`},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			_, err := parsePropertyPath(tc.path)
@@ -240,4 +244,31 @@ func TestConfig_RejectsUnparseableResourceAttribute(t *testing.T) {
 	}))
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "resource_attribute")
+}
+
+// The README's table of what each resource_attribute spelling looks up. A bracket anywhere in
+// the value makes it a path, which changes the meaning of a name that genuinely contains one -
+// so the table is a promise about behaviour, not a description of intent.
+func TestResolveAttributeName_BracketIsSignificant(t *testing.T) {
+	for _, tc := range []struct {
+		written  string
+		lookedUp string // empty means the spelling is rejected
+	}{
+		{"k8s.pod.labels.app", "k8s.pod.labels.app"},
+		{`k8s.pod.labels["a.b"]`, "k8s.pod.labels.a.b"},
+		{`foo["bar"]`, "foo.bar"},
+		{"foo[bar]", ""},
+		// Only an opening bracket triggers parsing, so this is still verbatim.
+		{"has]bracket", "has]bracket"},
+	} {
+		t.Run(tc.written, func(t *testing.T) {
+			got, err := resolveAttributeName(tc.written)
+			if tc.lookedUp == "" {
+				assert.Error(t, err, "the README says this spelling is rejected")
+				return
+			}
+			require.NoError(t, err)
+			assert.Equal(t, tc.lookedUp, got)
+		})
+	}
 }

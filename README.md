@@ -364,9 +364,23 @@ resource_attribute: k8s.pod.labels["app.kubernetes.io/name"]   # same attribute
 resource_attribute: k8s.pod.labels.app.kubernetes.io/name      # as this one
 ```
 
-Both spellings are supported, so nothing written before this needs changing; the bracketed one
-is easier to read, and it is what the examples here use. A spelling containing no bracket is
-taken as the attribute name verbatim.
+Both spellings name the same attribute, and the bracketed one is what the examples here use.
+
+**A `[` anywhere in the value makes it a bracketed path**, so the brackets are not merely
+cosmetic:
+
+| Written | Attribute looked up |
+|---|---|
+| `k8s.pod.labels.app` | `k8s.pod.labels.app`, verbatim |
+| `k8s.pod.labels["a.b"]` | `k8s.pod.labels.a.b` |
+| `foo["bar"]` | `foo.bar` - **not** the literal name `foo["bar"]` |
+| `foo[bar]` | rejected; a bracketed key is double quoted |
+
+A value with no `[` in it is the attribute name verbatim, which is every attribute name that
+follows OpenTelemetry's conventions - they are dotted, and brackets do not appear in them. But
+an attribute whose name genuinely contains a bracket can no longer be written as itself: the
+last two rows above changed meaning, one silently. If you have such an attribute, this syntax
+cannot address it.
 
 Where several endpoint types have to be routed by one rule, deriving a `resource_attributes`
 entry per template is still the way to normalise them - a `port` endpoint nests labels under

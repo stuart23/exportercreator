@@ -389,9 +389,16 @@ func parsePropertyPath(path string) ([]string, error) {
 	}
 
 	var keys []string
+	afterDot := false
 	for i := 0; i < len(path); {
 		var key string
 		if path[i] == '[' {
+			// A dot separates named segments, so labels.["a"] is missing the name between
+			// them. OTTL rejects it for the same reason; accepting it would make it a second
+			// spelling of labels["a"].
+			if afterDot {
+				return nil, fmt.Errorf("a dot must be followed by a name, not a bracket, at position %d", i)
+			}
 			var err error
 			if key, i, err = parseBracketedKey(path, i); err != nil {
 				return nil, err
@@ -407,6 +414,7 @@ func parsePropertyPath(path string) ([]string, error) {
 			key = path[start:i]
 		}
 		keys = append(keys, key)
+		afterDot = false
 
 		switch {
 		case i == len(path):
@@ -415,6 +423,7 @@ func parsePropertyPath(path string) ([]string, error) {
 			if i == len(path) {
 				return nil, errors.New("path ends with a dot")
 			}
+			afterDot = true
 		case path[i] == '[':
 			// An adjacent bracket, as in labels["a"]["b"], needs no separator.
 		default:
