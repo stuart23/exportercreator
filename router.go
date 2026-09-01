@@ -5,6 +5,7 @@ package exportercreator // import "github.com/stuart23/exportercreator"
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"sync"
@@ -50,8 +51,20 @@ type routedExporter struct {
 
 // newTelemetryRouter creates a new telemetry router with the given routing rules.
 func newTelemetryRouter(rules []RoutingRule, telemetry *metadata.TelemetryBuilder) *telemetryRouter {
+	// Resolve each rule's attribute spelling once. Config.Unmarshal has already rejected one
+	// that does not parse; a router built another way falls back to the spelling as given.
+	resolved := make([]RoutingRule, len(rules))
+	for i, rule := range rules {
+		resolved[i] = rule
+		if name, err := resolveAttributeName(rule.ResourceAttribute); err == nil {
+			resolved[i].attributeName = name
+		} else {
+			resolved[i].attributeName = rule.ResourceAttribute
+		}
+	}
+
 	return &telemetryRouter{
-		rules:     rules,
+		rules:     resolved,
 		exporters: make(map[observer.EndpointID][]*routedExporter),
 		byType:    map[string]int{},
 		telemetry: telemetry,
@@ -254,7 +267,7 @@ func (r *telemetryRouter) matchesAllRules(resourceAttrs pcommon.Map, properties 
 	debug := r.logger != nil && r.logger.Core().Enabled(zapcore.DebugLevel)
 	for _, rule := range r.rules {
 		// Get the resource attribute value
-		attrVal, ok := resourceAttrs.Get(rule.ResourceAttribute)
+		attrVal, ok := resourceAttrs.Get(rule.attributeName)
 		if !ok {
 			if debug {
 				r.logger.Debug("routing rule failed: resource attribute not found in telemetry",
@@ -340,9 +353,161 @@ func flattenProperties(env observer.EndpointEnv) map[string]any {
 	return result
 }
 
-// getNestedProperty retrieves a nested property using dot notation (e.g., "labels.app", "spec.region").
+// parsePropertyPath splits an endpoint property path into the keys it names.
+//
+// The syntax follows OTTL's, so that a path here reads the same as the equivalent path in a
+// transform processor or a filter: keys are separated by dots, and a key that itself contains
+// dots - which every namespaced Kubernetes label does - is written in brackets and double
+// quoted, with \" and \\ escapes.
+//
+//	pod.labels["app.kubernetes.io/name"]
+//	pod.labels["a"]["b"]
+//
+// See https://github.com/open-telemetry/opentelemetry-collector-contrib/blob/main/pkg/ottl/contexts/ottlmetric/README.md
+//
+// Every bracketed and dotted form OTTL accepts is accepted here and means the same thing. The
+// differences, all documented in the README, are at the edges:
+//
+//   - OTTL restricts an unbracketed segment to [a-z][a-z0-9_]*, so labels.appName is not a path
+//     to it and labels.app/name reads as labels.app divided by name. This accepts any character
+//     but a dot or a bracket, because splitting on dots alone did until now and such paths are
+//     already configured. Brackets are the portable way to write either.
+//   - OTTL allows an integer index and a bare identifier in brackets, for slices and for
+//     dynamic lookups. Endpoint properties are string maps, so neither has anything to address;
+//     ["0"] still names a key called "0".
+//   - OTTL allows an empty key, [""]. Nothing can usefully be named by one here, so it is an
+//     error rather than a path that matches nothing.
+//
+// An unparseable path is an error rather than a path that matches nothing, so that
+// configuration reports the mistake instead of quietly routing no telemetry.
+func parsePropertyPath(path string) ([]string, error) {
+	if path == "" {
+		return nil, errors.New("path is empty")
+	}
+	if path[0] == '[' {
+		return nil, errors.New("a path starts with a name, as labels[\"a.b\"] rather than [\"a.b\"]")
+	}
+
+	var keys []string
+	afterDot := false
+	for i := 0; i < len(path); {
+		var key string
+		if path[i] == '[' {
+			// A dot separates named segments, so labels.["a"] is missing the name between
+			// them. OTTL rejects it for the same reason; accepting it would make it a second
+			// spelling of labels["a"].
+			if afterDot {
+				return nil, fmt.Errorf("a dot must be followed by a name, not a bracket, at position %d", i)
+			}
+			var err error
+			if key, i, err = parseBracketedKey(path, i); err != nil {
+				return nil, err
+			}
+		} else {
+			start := i
+			for i < len(path) && path[i] != '.' && path[i] != '[' {
+				i++
+			}
+			if i == start {
+				return nil, fmt.Errorf("empty key at position %d", start)
+			}
+			key = path[start:i]
+		}
+		keys = append(keys, key)
+		afterDot = false
+
+		switch {
+		case i == len(path):
+		case path[i] == '.':
+			i++
+			if i == len(path) {
+				return nil, errors.New("path ends with a dot")
+			}
+			afterDot = true
+		case path[i] == '[':
+			// An adjacent bracket, as in labels["a"]["b"], needs no separator.
+		default:
+			return nil, fmt.Errorf("unexpected %q at position %d", path[i], i)
+		}
+	}
+	return keys, nil
+}
+
+// parseBracketedKey reads the ["..."] key starting at path[i], which must be an opening bracket,
+// and returns the key with the index just past the closing bracket. The key is double quoted, as
+// OTTL's string token is, and \" and \\ are the escapes a key can contain: a Kubernetes label
+// key holds neither, but rejecting them outright would differ from OTTL silently.
+func parseBracketedKey(path string, i int) (string, int, error) {
+	j := i + 1
+	if j == len(path) || path[j] != '"' {
+		return "", 0, fmt.Errorf(`expected a double quoted key in %q, as labels["a.b"]`, path[i:])
+	}
+	j++
+
+	var key strings.Builder
+	for j < len(path) {
+		switch path[j] {
+		case '\\':
+			if j+1 == len(path) {
+				return "", 0, fmt.Errorf("unterminated escape in %q", path[i:])
+			}
+			switch path[j+1] {
+			case '"', '\\':
+				key.WriteByte(path[j+1])
+			default:
+				return "", 0, fmt.Errorf(`unsupported escape \%c in %q, only \" and \\ are`, path[j+1], path[i:])
+			}
+			j += 2
+		case '"':
+			j++
+			if j == len(path) || path[j] != ']' {
+				return "", 0, fmt.Errorf("expected ] after the quoted key in %q", path[i:])
+			}
+			if key.Len() == 0 {
+				return "", 0, fmt.Errorf("empty key in %q", path[i:])
+			}
+			return key.String(), j + 1, nil
+		default:
+			key.WriteByte(path[j])
+			j++
+		}
+	}
+	return "", 0, fmt.Errorf("unterminated quote in %q", path[i:])
+}
+
+// resolveAttributeName turns the configured spelling of a resource attribute into the attribute
+// name to look up.
+//
+// A resource attribute is a flat name, not a path: k8sattributes emits one attribute called
+// "k8s.pod.labels.app.kubernetes.io/name", and nothing is nested. Written out it is a run of
+// dots with no way to see where the prefix ends and the label key begins, so the same bracket
+// form the endpoint side uses is accepted as an alternative spelling of the same name:
+//
+//	k8s.pod.labels["app.kubernetes.io/name"]   is  k8s.pod.labels.app.kubernetes.io/name
+//
+// The brackets are punctuation, not structure: the segments are joined back with dots. A
+// spelling with no bracket in it is the attribute name verbatim, which is what every
+// configuration written before this used.
+func resolveAttributeName(configured string) (string, error) {
+	if !strings.ContainsRune(configured, '[') {
+		return configured, nil
+	}
+	segments, err := parsePropertyPath(configured)
+	if err != nil {
+		return "", err
+	}
+	return strings.Join(segments, "."), nil
+}
+
+// getNestedProperty retrieves a nested property by path, e.g. "labels.app", "spec.region" or
+// pod.labels["app.kubernetes.io/name"]. See parsePropertyPath.
 func getNestedProperty(properties map[string]any, path string) any {
-	parts := strings.Split(path, ".")
+	parts, err := parsePropertyPath(path)
+	if err != nil {
+		// Unreachable through the collector: Config.Unmarshal rejects a path that does not
+		// parse. Treated as no match rather than panicking if it is reached another way.
+		return nil
+	}
 	current := any(properties)
 
 	for _, part := range parts {
@@ -350,7 +515,15 @@ func getNestedProperty(properties map[string]any, path string) any {
 		case map[string]any:
 			current = v[part]
 		case map[string]string:
-			current = v[part]
+			// Two-value form: the zero value of a string map is "", not nil, so a key that is
+			// absent would otherwise look like a key present and empty. The caller treats nil
+			// as "no such property" and anything else as a value to compare, so an absent
+			// label would compare equal to an empty resource attribute.
+			value, ok := v[part]
+			if !ok {
+				return nil
+			}
+			current = value
 		case observer.EndpointEnv:
 			current = v[part]
 		default:

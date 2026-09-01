@@ -79,8 +79,13 @@ var _ confmap.Unmarshaler = (*Config)(nil)
 
 // RoutingRule defines a mapping between a resource attribute and an endpoint property.
 type RoutingRule struct {
-	// ResourceAttribute is the resource attribute key to match (e.g., "k8s.pod.labels.app")
+	// ResourceAttribute is the resource attribute key to match (e.g., "k8s.pod.labels.app").
+	// A key containing dots may be bracketed for legibility, as
+	// k8s.pod.labels["app.kubernetes.io/name"]; see resolveAttributeName.
 	ResourceAttribute string `mapstructure:"resource_attribute"`
+	// attributeName is ResourceAttribute with any brackets resolved away, which is the name
+	// actually looked up on a resource. The configured spelling is kept for diagnostics.
+	attributeName string
 	// EndpointProperty is the endpoint property to match against (e.g., "labels.app", "spec.region")
 	// Supports dot notation for nested fields
 	EndpointProperty string `mapstructure:"endpoint_property"`
@@ -125,6 +130,17 @@ func (cfg *Config) Unmarshal(componentParser *confmap.Conf) error {
 		}
 		if rule.EndpointProperty == "" {
 			return fmt.Errorf("routing rule %d: endpoint_property is required", i)
+		}
+		// A path that cannot be parsed would match nothing, for every resource, with no
+		// indication why. Reject it here instead.
+		if _, err := resolveAttributeName(rule.ResourceAttribute); err != nil {
+			return fmt.Errorf("routing rule %d: resource_attribute %q is invalid: %w",
+				i, rule.ResourceAttribute, err)
+		}
+		if _, err := parsePropertyPath(rule.EndpointProperty); err != nil {
+			return fmt.Errorf("routing rule %d: endpoint_property %q is invalid: %w; a key "+
+				`containing dots is written in brackets, as pod.labels["app.kubernetes.io/name"]`,
+				i, rule.EndpointProperty, err)
 		}
 	}
 

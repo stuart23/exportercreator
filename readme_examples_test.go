@@ -98,3 +98,67 @@ func TestREADMEExamples_RulesMatch(t *testing.T) {
 		}
 	}
 }
+
+// Every endpoint_property the README shows must parse. This is the field that could not address
+// a dotted key at all, so an example naming one wrongly would document a rule that silently
+// matches nothing.
+func TestREADMEExamples_EndpointPropertiesParse(t *testing.T) {
+	for _, path := range []string{
+		// The simple example, and the options table.
+		"labels.app",
+		"spec.region",
+		// The complex example: a port endpoint nests the pod, and region is normalised onto
+		// each template as a resource attribute so one rule spans several endpoint types.
+		"pod.labels.app",
+		"region",
+		// The dotted-key section, and the OTTL comparison beside it.
+		`pod.labels["app.kubernetes.io/name"]`,
+		`labels["a"]["b"]`,
+		`labels["appName"]`,
+		`labels["app/name"]`,
+	} {
+		if _, err := parsePropertyPath(path); err != nil {
+			t.Errorf("endpoint_property %q does not parse: %v", path, err)
+		}
+	}
+}
+
+// The README claims each of these is rejected, in the table comparing this syntax to OTTL's.
+// A claim that something is an error is worth holding to as much as one that it works.
+func TestREADMEExamples_RejectedFormsAreRejected(t *testing.T) {
+	for _, path := range []string{
+		`labels['a.b']`,
+		"labels[0]",
+		"labels[app]",
+		`labels[""]`,
+	} {
+		if _, err := parsePropertyPath(path); err == nil {
+			t.Errorf("%q parses, but the README says it is rejected", path)
+		}
+	}
+}
+
+// The README shows a resource attribute written both ways and says they name the same
+// attribute. That equivalence is the whole reason the bracketed spelling is safe to prefer, so
+// it is checked rather than asserted in prose.
+func TestREADMEExamples_AttributeSpellingsAreEquivalent(t *testing.T) {
+	for _, pair := range [][2]string{
+		{`k8s.pod.labels["app.kubernetes.io/name"]`, "k8s.pod.labels.app.kubernetes.io/name"},
+		{`k8s.pod.labels["app"]`, "k8s.pod.labels.app"},
+	} {
+		bracketed, err := resolveAttributeName(pair[0])
+		if err != nil {
+			t.Errorf("%q does not resolve: %v", pair[0], err)
+			continue
+		}
+		plain, err := resolveAttributeName(pair[1])
+		if err != nil {
+			t.Errorf("%q does not resolve: %v", pair[1], err)
+			continue
+		}
+		if bracketed != plain {
+			t.Errorf("%q resolves to %q, %q to %q; the README says they are the same attribute",
+				pair[0], bracketed, pair[1], plain)
+		}
+	}
+}

@@ -109,8 +109,8 @@ Each routing rule maps a resource attribute to an endpoint property:
 
 | Field | Type | Description |
 |-------|------|-------------|
-| `resource_attribute` | `string` | Resource attribute key (e.g., `k8s.pod.labels.app`) |
-| `endpoint_property` | `string` | Endpoint property path using dot notation (e.g., `labels.app`, `spec.region`) |
+| `resource_attribute` | `string` | Resource attribute key (e.g., `k8s.pod.labels.app`). A key containing dots may be bracketed for legibility: `k8s.pod.labels["app.kubernetes.io/name"]` names the same attribute |
+| `endpoint_property` | `string` | Endpoint property path using dot notation (e.g., `labels.app`, `spec.region`). A key that itself contains dots goes in brackets: `pod.labels["app.kubernetes.io/name"]` |
 
 ### Exporter Template
 
@@ -335,6 +335,57 @@ than an error. Convert it first:
 ```yaml
 rule: type == "hostport" && string(transport) == "TCP"
 ```
+
+### Keys that contain dots
+
+An `endpoint_property` names keys separated by dots, so a key that itself contains dots - which
+every namespaced Kubernetes label does - goes in brackets, double quoted:
+
+```yaml
+routing:
+  rules:
+    - resource_attribute: k8s.pod.labels["app.kubernetes.io/name"]
+      endpoint_property: pod.labels["app.kubernetes.io/name"]
+```
+
+On the `endpoint_property` side the brackets are load bearing. Without them the path reads as
+`pod` → `labels` → `app` → `kubernetes` → `io/name` and matches nothing. A path that cannot be
+parsed is rejected at startup rather than silently matching nothing for the life of the
+collector.
+
+On the `resource_attribute` side they are only punctuation. A resource attribute is a flat
+name, not a path: `k8sattributes` emits one attribute called
+`k8s.pod.labels.app.kubernetes.io/name`, and nothing is nested. Written out, it is a run of
+dots with nothing to show where the prefix ends and the label key begins, so the brackets are
+accepted there too and mean exactly the same name:
+
+```yaml
+resource_attribute: k8s.pod.labels["app.kubernetes.io/name"]   # same attribute
+resource_attribute: k8s.pod.labels.app.kubernetes.io/name      # as this one
+```
+
+Both spellings name the same attribute, and the bracketed one is what the examples here use.
+
+**A `[` anywhere in the value makes it a bracketed path**, so the brackets are not merely
+cosmetic:
+
+| Written | Attribute looked up |
+|---|---|
+| `k8s.pod.labels.app` | `k8s.pod.labels.app`, verbatim |
+| `k8s.pod.labels["a.b"]` | `k8s.pod.labels.a.b` |
+| `foo["bar"]` | `foo.bar` - **not** the literal name `foo["bar"]` |
+| `foo[bar]` | rejected; a bracketed key is double quoted |
+
+A value with no `[` in it is the attribute name verbatim, which is every attribute name that
+follows OpenTelemetry's conventions - they are dotted, and brackets do not appear in them. But
+an attribute whose name genuinely contains a bracket can no longer be written as itself: the
+last two rows above changed meaning, one silently. If you have such an attribute, this syntax
+cannot address it.
+
+Where several endpoint types have to be routed by one rule, deriving a `resource_attributes`
+entry per template is still the way to normalise them - a `port` endpoint nests labels under
+`pod.`, a `k8s.service` carries them at the top level, and a `hostport` has none. That is what
+the complex example above does with `region`.
 
 ## Development
 

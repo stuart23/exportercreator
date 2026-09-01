@@ -186,11 +186,16 @@ func TestGetNestedProperty(t *testing.T) {
 	val5 := getNestedProperty(properties, "spec.resourceAttributes.service")
 	assert.Equal(t, "my-service", val5)
 
-	// Test non-existent property
+	// Test non-existent property. A missing key reads as nil, not as the zero value of the
+	// map it was looked up in: matchesAllRules treats nil as "the endpoint has no such
+	// property" and anything else as a value to compare, so an absent label returning ""
+	// would compare equal to an empty resource attribute.
 	val6 := getNestedProperty(properties, "labels.missing")
-	// When accessing a non-existent key in a map, Go returns the zero value for the type
-	// For map[string]string, that's an empty string, not nil
-	assert.Equal(t, "", val6)
+	assert.Nil(t, val6)
+
+	// A label that is present but empty is still a value, and still compares as one.
+	properties["labels"].(map[string]string)["empty"] = ""
+	assert.Equal(t, "", getNestedProperty(properties, "labels.empty"))
 
 	// Test non-existent path
 	val7 := getNestedProperty(properties, "missing.path")
