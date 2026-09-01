@@ -110,7 +110,7 @@ Each routing rule maps a resource attribute to an endpoint property:
 | Field | Type | Description |
 |-------|------|-------------|
 | `resource_attribute` | `string` | Resource attribute key (e.g., `k8s.pod.labels.app`) |
-| `endpoint_property` | `string` | Endpoint property path using dot notation (e.g., `labels.app`, `spec.region`) |
+| `endpoint_property` | `string` | Endpoint property path using dot notation (e.g., `labels.app`, `spec.region`). A key that itself contains dots goes in brackets: `pod.labels["app.kubernetes.io/name"]` |
 
 ### Exporter Template
 
@@ -335,6 +335,30 @@ than an error. Convert it first:
 ```yaml
 rule: type == "hostport" && string(transport) == "TCP"
 ```
+
+### Keys that contain dots
+
+An `endpoint_property` names keys separated by dots, so a key that itself contains dots - which
+every namespaced Kubernetes label does - goes in brackets:
+
+```yaml
+routing:
+  rules:
+    - resource_attribute: k8s.pod.labels.app.kubernetes.io/name
+      endpoint_property: pod.labels["app.kubernetes.io/name"]
+```
+
+Without the brackets the path reads as `pod` → `labels` → `app` → `kubernetes` → `io/name` and
+matches nothing. Single quotes work too, and a path that cannot be parsed is rejected at
+startup rather than silently matching nothing for the life of the collector.
+
+Note the two sides are unrelated: `resource_attribute` is a whole attribute name and is never
+split, so a dotted attribute like `k8s.pod.labels.app.kubernetes.io/name` needs no brackets.
+
+Where several endpoint types have to be routed by one rule, deriving a `resource_attributes`
+entry per template is still the way to normalise them - a `port` endpoint nests labels under
+`pod.`, a `k8s.service` carries them at the top level, and a `hostport` has none. That is what
+the complex example above does with `region`.
 
 ## Development
 

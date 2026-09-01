@@ -5,8 +5,8 @@ package exportercreator // import "github.com/stuart23/exportercreator"
 
 import (
 	"context"
+	"errors"
 	"fmt"
-	"strings"
 	"sync"
 
 	"go.opentelemetry.io/collector/component"
@@ -340,9 +340,110 @@ func flattenProperties(env observer.EndpointEnv) map[string]any {
 	return result
 }
 
-// getNestedProperty retrieves a nested property using dot notation (e.g., "labels.app", "spec.region").
+// parsePropertyPath splits an endpoint property path into the keys it names.
+//
+// Keys are separated by dots. A key that itself contains dots - which every namespaced
+// Kubernetes label does, such as "app.kubernetes.io/name" - is written in brackets and quoted,
+// the same way the rule expressions and endpoint value expansion already accept it:
+//
+//	pod.labels["topology.kubernetes.io/region"]
+//	labels['app.kubernetes.io/name']
+//
+// Splitting on dots alone cannot address those keys at all, so a path naming one used to match
+// nothing, silently. An unparseable path is an error rather than a path that matches nothing,
+// so that configuration reports the mistake instead of quietly routing no telemetry.
+func parsePropertyPath(path string) ([]string, error) {
+	if path == "" {
+		return nil, errors.New("path is empty")
+	}
+
+	var keys []string
+	for i := 0; i < len(path); {
+		var key string
+		if path[i] == '[' {
+			var err error
+			if key, i, err = parseBracketedKey(path, i); err != nil {
+				return nil, err
+			}
+		} else {
+			start := i
+			for i < len(path) && path[i] != '.' && path[i] != '[' {
+				i++
+			}
+			if i == start {
+				return nil, fmt.Errorf("empty key at position %d", start)
+			}
+			key = path[start:i]
+		}
+		keys = append(keys, key)
+
+		switch {
+		case i == len(path):
+		case path[i] == '.':
+			i++
+			if i == len(path) {
+				return nil, errors.New("path ends with a dot")
+			}
+		case path[i] == '[':
+			// An adjacent bracket, as in labels["a.b"], needs no separator.
+		default:
+			return nil, fmt.Errorf("unexpected %q at position %d", path[i], i)
+		}
+	}
+	return keys, nil
+}
+
+// parseBracketedKey reads the ["..."] key starting at path[i], which must be an opening bracket.
+// It returns the key and the index just past the closing bracket. Quotes are optional, and a key
+// cannot contain the quote character it is wrapped in; Kubernetes label keys never do.
+func parseBracketedKey(path string, i int) (string, int, error) {
+	j := i + 1
+	if j >= len(path) {
+		return "", 0, fmt.Errorf("unterminated %q", path[i:])
+	}
+
+	if quote := path[j]; quote == '"' || quote == '\'' {
+		j++
+		start := j
+		for j < len(path) && path[j] != quote {
+			j++
+		}
+		if j == len(path) {
+			return "", 0, fmt.Errorf("unterminated quote in %q", path[i:])
+		}
+		key := path[start:j]
+		j++ // past the closing quote
+		if j == len(path) || path[j] != ']' {
+			return "", 0, fmt.Errorf("expected ] after the quoted key in %q", path[i:])
+		}
+		if key == "" {
+			return "", 0, fmt.Errorf("empty key in %q", path[i:])
+		}
+		return key, j + 1, nil
+	}
+
+	start := j
+	for j < len(path) && path[j] != ']' {
+		j++
+	}
+	if j == len(path) {
+		return "", 0, fmt.Errorf("unterminated %q", path[i:])
+	}
+	if key := path[start:j]; key != "" {
+		return key, j + 1, nil
+	}
+	return "", 0, fmt.Errorf("empty key in %q", path[i:])
+}
+
+// getNestedProperty retrieves a nested property by path, e.g. "labels.app", "spec.region" or
+// pod.labels["app.kubernetes.io/name"]. See parsePropertyPath.
 func getNestedProperty(properties map[string]any, path string) any {
-	parts := strings.Split(path, ".")
+	parts, err := parsePropertyPath(path)
+	if err != nil {
+		// Unreachable through the collector: Config.Unmarshal rejects a path that does not
+		// parse. Treated as no match rather than panicking if it is reached another way.
+		return nil
+	}
 	current := any(properties)
 
 	for _, part := range parts {
@@ -350,7 +451,15 @@ func getNestedProperty(properties map[string]any, path string) any {
 		case map[string]any:
 			current = v[part]
 		case map[string]string:
-			current = v[part]
+			// Two-value form: the zero value of a string map is "", not nil, so a key that is
+			// absent would otherwise look like a key present and empty. The caller treats nil
+			// as "no such property" and anything else as a value to compare, so an absent
+			// label would compare equal to an empty resource attribute.
+			value, ok := v[part]
+			if !ok {
+				return nil
+			}
+			current = value
 		case observer.EndpointEnv:
 			current = v[part]
 		default:

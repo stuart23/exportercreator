@@ -98,3 +98,24 @@ func TestREADMEExamples_RulesMatch(t *testing.T) {
 		}
 	}
 }
+
+// Every endpoint_property the README shows must parse. This is the field that could not address
+// a dotted key at all, so an example naming one wrongly would document a rule that silently
+// matches nothing.
+func TestREADMEExamples_EndpointPropertiesParse(t *testing.T) {
+	for _, path := range []string{
+		// The simple example, and the options table.
+		"labels.app",
+		"spec.region",
+		// The complex example: a port endpoint nests the pod, and region is normalised onto
+		// each template as a resource attribute so one rule spans several endpoint types.
+		"pod.labels.app",
+		"region",
+		// The dotted-key section.
+		`pod.labels["app.kubernetes.io/name"]`,
+	} {
+		if _, err := parsePropertyPath(path); err != nil {
+			t.Errorf("endpoint_property %q does not parse: %v", path, err)
+		}
+	}
+}

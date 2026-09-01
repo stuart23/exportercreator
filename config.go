@@ -126,6 +126,13 @@ func (cfg *Config) Unmarshal(componentParser *confmap.Conf) error {
 		if rule.EndpointProperty == "" {
 			return fmt.Errorf("routing rule %d: endpoint_property is required", i)
 		}
+		// A path that cannot be parsed would match nothing, for every resource, with no
+		// indication why. Reject it here instead.
+		if _, err := parsePropertyPath(rule.EndpointProperty); err != nil {
+			return fmt.Errorf("routing rule %d: endpoint_property %q is invalid: %w; a key "+
+				`containing dots is written in brackets, as pod.labels["app.kubernetes.io/name"]`,
+				i, rule.EndpointProperty, err)
+		}
 	}
 
 	// Sub returns an empty Conf and no error when the key is absent, so configuring no
