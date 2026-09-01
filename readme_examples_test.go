@@ -111,11 +111,29 @@ func TestREADMEExamples_EndpointPropertiesParse(t *testing.T) {
 		// each template as a resource attribute so one rule spans several endpoint types.
 		"pod.labels.app",
 		"region",
-		// The dotted-key section.
+		// The dotted-key section, and the OTTL comparison beside it.
 		`pod.labels["app.kubernetes.io/name"]`,
+		`labels["a"]["b"]`,
+		`labels["appName"]`,
+		`labels["app/name"]`,
 	} {
 		if _, err := parsePropertyPath(path); err != nil {
 			t.Errorf("endpoint_property %q does not parse: %v", path, err)
+		}
+	}
+}
+
+// The README claims each of these is rejected, in the table comparing this syntax to OTTL's.
+// A claim that something is an error is worth holding to as much as one that it works.
+func TestREADMEExamples_RejectedFormsAreRejected(t *testing.T) {
+	for _, path := range []string{
+		`labels['a.b']`,
+		"labels[0]",
+		"labels[app]",
+		`labels[""]`,
+	} {
+		if _, err := parsePropertyPath(path); err == nil {
+			t.Errorf("%q parses, but the README says it is rejected", path)
 		}
 	}
 }

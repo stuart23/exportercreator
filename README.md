@@ -339,7 +339,7 @@ rule: type == "hostport" && string(transport) == "TCP"
 ### Keys that contain dots
 
 An `endpoint_property` names keys separated by dots, so a key that itself contains dots - which
-every namespaced Kubernetes label does - goes in brackets:
+every namespaced Kubernetes label does - goes in brackets, double quoted:
 
 ```yaml
 routing:
@@ -349,8 +349,8 @@ routing:
 ```
 
 Without the brackets the path reads as `pod` → `labels` → `app` → `kubernetes` → `io/name` and
-matches nothing. Single quotes work too, and a path that cannot be parsed is rejected at
-startup rather than silently matching nothing for the life of the collector.
+matches nothing. A path that cannot be parsed is rejected at startup rather than silently
+matching nothing for the life of the collector.
 
 Note the two sides are unrelated: `resource_attribute` is a whole attribute name and is never
 split, so a dotted attribute like `k8s.pod.labels.app.kubernetes.io/name` needs no brackets.
@@ -359,6 +359,43 @@ Where several endpoint types have to be routed by one rule, deriving a `resource
 entry per template is still the way to normalise them - a `port` endpoint nests labels under
 `pod.`, a `k8s.service` carries them at the top level, and a `hostport` has none. That is what
 the complex example above does with `region`.
+
+#### Relationship to OTTL
+
+The path syntax follows [OTTL's](https://github.com/open-telemetry/opentelemetry-collector-contrib/blob/main/pkg/ottl/contexts/ottlmetric/README.md),
+so a path here reads the same as the equivalent path in a `transform` processor or a `filter`.
+Dotted segments, double-quoted bracketed keys, chained keys and `\"` / `\\` escapes all behave
+as they do there:
+
+```yaml
+endpoint_property: pod.labels["app.kubernetes.io/name"]   # same as OTTL
+endpoint_property: labels["a"]["b"]                       # chained keys, as in OTTL
+```
+
+Every bracketed or dotted form OTTL accepts is accepted here and means the same thing. The
+differences are at the edges, and each is a deliberate choice rather than an omission:
+
+| Form | Here | OTTL |
+|---|---|---|
+| `labels['a.b']` | rejected | rejected - OTTL quotes strings with `"` only |
+| `labels[0]` | rejected | an integer index, for slices |
+| `labels[app]` | rejected | a dynamic lookup by expression |
+| `labels[""]` | rejected | an empty key |
+| `labels.appName` | a key `appName` | rejected - a segment is `[a-z][a-z0-9_]*` |
+| `labels.app/name` | a key `app/name` | `labels.app` **divided by** `name` |
+
+Endpoint properties are string maps, so an index and a dynamic lookup have nothing to address
+and an empty key names nothing. The last two rows are the ones to know about: unbracketed
+segments are accepted more liberally here than in OTTL, because splitting on dots alone did
+until now and such paths are already configured. **Bracket them and the path means the same
+thing in both** - `labels["appName"]`, `labels["app/name"]` - which is worth doing if the same
+key is also named in a `transform` processor.
+
+This component does not depend on the `pkg/ottl` module. Resolving a path against the endpoint
+property map needs the syntax, not the language: OTTL's parser is built around pdata contexts,
+its grammar types are unexported, and pulling it in for a path split would add participle,
+xmlquery, xpath, grok, glob, uuid and a dozen more transitive dependencies to resolve a key in a
+`map[string]string`. The syntax is checked against OTTL's own parser rather than assumed.
 
 ## Development
 

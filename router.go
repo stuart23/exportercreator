@@ -7,6 +7,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"sync"
 
 	"go.opentelemetry.io/collector/component"
@@ -342,19 +343,37 @@ func flattenProperties(env observer.EndpointEnv) map[string]any {
 
 // parsePropertyPath splits an endpoint property path into the keys it names.
 //
-// Keys are separated by dots. A key that itself contains dots - which every namespaced
-// Kubernetes label does, such as "app.kubernetes.io/name" - is written in brackets and quoted,
-// the same way the rule expressions and endpoint value expansion already accept it:
+// The syntax follows OTTL's, so that a path here reads the same as the equivalent path in a
+// transform processor or a filter: keys are separated by dots, and a key that itself contains
+// dots - which every namespaced Kubernetes label does - is written in brackets and double
+// quoted, with \" and \\ escapes.
 //
-//	pod.labels["topology.kubernetes.io/region"]
-//	labels['app.kubernetes.io/name']
+//	pod.labels["app.kubernetes.io/name"]
+//	pod.labels["a"]["b"]
 //
-// Splitting on dots alone cannot address those keys at all, so a path naming one used to match
-// nothing, silently. An unparseable path is an error rather than a path that matches nothing,
-// so that configuration reports the mistake instead of quietly routing no telemetry.
+// See https://github.com/open-telemetry/opentelemetry-collector-contrib/blob/main/pkg/ottl/contexts/ottlmetric/README.md
+//
+// Every bracketed and dotted form OTTL accepts is accepted here and means the same thing. The
+// differences, all documented in the README, are at the edges:
+//
+//   - OTTL restricts an unbracketed segment to [a-z][a-z0-9_]*, so labels.appName is not a path
+//     to it and labels.app/name reads as labels.app divided by name. This accepts any character
+//     but a dot or a bracket, because splitting on dots alone did until now and such paths are
+//     already configured. Brackets are the portable way to write either.
+//   - OTTL allows an integer index and a bare identifier in brackets, for slices and for
+//     dynamic lookups. Endpoint properties are string maps, so neither has anything to address;
+//     ["0"] still names a key called "0".
+//   - OTTL allows an empty key, [""]. Nothing can usefully be named by one here, so it is an
+//     error rather than a path that matches nothing.
+//
+// An unparseable path is an error rather than a path that matches nothing, so that
+// configuration reports the mistake instead of quietly routing no telemetry.
 func parsePropertyPath(path string) ([]string, error) {
 	if path == "" {
 		return nil, errors.New("path is empty")
+	}
+	if path[0] == '[' {
+		return nil, errors.New("a path starts with a name, as labels[\"a.b\"] rather than [\"a.b\"]")
 	}
 
 	var keys []string
@@ -385,7 +404,7 @@ func parsePropertyPath(path string) ([]string, error) {
 				return nil, errors.New("path ends with a dot")
 			}
 		case path[i] == '[':
-			// An adjacent bracket, as in labels["a.b"], needs no separator.
+			// An adjacent bracket, as in labels["a"]["b"], needs no separator.
 		default:
 			return nil, fmt.Errorf("unexpected %q at position %d", path[i], i)
 		}
@@ -393,46 +412,46 @@ func parsePropertyPath(path string) ([]string, error) {
 	return keys, nil
 }
 
-// parseBracketedKey reads the ["..."] key starting at path[i], which must be an opening bracket.
-// It returns the key and the index just past the closing bracket. Quotes are optional, and a key
-// cannot contain the quote character it is wrapped in; Kubernetes label keys never do.
+// parseBracketedKey reads the ["..."] key starting at path[i], which must be an opening bracket,
+// and returns the key with the index just past the closing bracket. The key is double quoted, as
+// OTTL's string token is, and \" and \\ are the escapes a key can contain: a Kubernetes label
+// key holds neither, but rejecting them outright would differ from OTTL silently.
 func parseBracketedKey(path string, i int) (string, int, error) {
 	j := i + 1
-	if j >= len(path) {
-		return "", 0, fmt.Errorf("unterminated %q", path[i:])
+	if j == len(path) || path[j] != '"' {
+		return "", 0, fmt.Errorf(`expected a double quoted key in %q, as labels["a.b"]`, path[i:])
 	}
+	j++
 
-	if quote := path[j]; quote == '"' || quote == '\'' {
-		j++
-		start := j
-		for j < len(path) && path[j] != quote {
+	var key strings.Builder
+	for j < len(path) {
+		switch path[j] {
+		case '\\':
+			if j+1 == len(path) {
+				return "", 0, fmt.Errorf("unterminated escape in %q", path[i:])
+			}
+			switch path[j+1] {
+			case '"', '\\':
+				key.WriteByte(path[j+1])
+			default:
+				return "", 0, fmt.Errorf(`unsupported escape \%c in %q, only \" and \\ are`, path[j+1], path[i:])
+			}
+			j += 2
+		case '"':
+			j++
+			if j == len(path) || path[j] != ']' {
+				return "", 0, fmt.Errorf("expected ] after the quoted key in %q", path[i:])
+			}
+			if key.Len() == 0 {
+				return "", 0, fmt.Errorf("empty key in %q", path[i:])
+			}
+			return key.String(), j + 1, nil
+		default:
+			key.WriteByte(path[j])
 			j++
 		}
-		if j == len(path) {
-			return "", 0, fmt.Errorf("unterminated quote in %q", path[i:])
-		}
-		key := path[start:j]
-		j++ // past the closing quote
-		if j == len(path) || path[j] != ']' {
-			return "", 0, fmt.Errorf("expected ] after the quoted key in %q", path[i:])
-		}
-		if key == "" {
-			return "", 0, fmt.Errorf("empty key in %q", path[i:])
-		}
-		return key, j + 1, nil
 	}
-
-	start := j
-	for j < len(path) && path[j] != ']' {
-		j++
-	}
-	if j == len(path) {
-		return "", 0, fmt.Errorf("unterminated %q", path[i:])
-	}
-	if key := path[start:j]; key != "" {
-		return key, j + 1, nil
-	}
-	return "", 0, fmt.Errorf("empty key in %q", path[i:])
+	return "", 0, fmt.Errorf("unterminated quote in %q", path[i:])
 }
 
 // getNestedProperty retrieves a nested property by path, e.g. "labels.app", "spec.region" or

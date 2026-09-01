@@ -26,11 +26,9 @@ func TestParsePropertyPath(t *testing.T) {
 		{"nested", "pod.labels.app", []string{"pod", "labels", "app"}},
 		{"bracketed dotted key", `pod.labels["app.kubernetes.io/name"]`,
 			[]string{"pod", "labels", "app.kubernetes.io/name"}},
-		{"single quotes", `labels['topology.kubernetes.io/region']`,
-			[]string{"labels", "topology.kubernetes.io/region"}},
-		{"unquoted bracket", "labels[app]", []string{"labels", "app"}},
-		{"bracket first", `["a.b"].c`, []string{"a.b", "c"}},
 		{"adjacent brackets", `labels["a.b"]["c.d"]`, []string{"labels", "a.b", "c.d"}},
+		{"escaped quote in a key", `labels["a\"b"]`, []string{"labels", `a"b`}},
+		{"escaped backslash in a key", `labels["a\\b"]`, []string{"labels", `a\b`}},
 		{"dot after bracket", `pod.labels["a.b"].sub`, []string{"pod", "labels", "a.b", "sub"}},
 		{"key with a slash but no dots", "labels.app/name", []string{"labels", "app/name"}},
 	}
@@ -58,6 +56,12 @@ func TestParsePropertyPath_Rejects(t *testing.T) {
 		{"junk after bracket", `labels["a.b"]x`},
 		{"empty bracket", "labels[]"},
 		{"empty quoted key", `labels[""]`},
+		// OTTL quotes bracketed keys with double quotes only, and a path starts with a name.
+		{"single quotes", `labels['a.b']`},
+		{"unquoted bracket key", "labels[app]"},
+		{"integer index", "labels[0]"},
+		{"path starting with a bracket", `["a.b"].c`},
+		{"unsupported escape", `labels["a\nb"]`},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			_, err := parsePropertyPath(tc.path)
@@ -89,7 +93,10 @@ func TestGetNestedProperty_DottedKeys(t *testing.T) {
 	props := namespacedEndpoint(t)
 
 	assert.Equal(t, "checkout", getNestedProperty(props, `pod.labels["app.kubernetes.io/name"]`))
-	assert.Equal(t, "us-east-1", getNestedProperty(props, `pod.labels['topology.kubernetes.io/region']`))
+	assert.Equal(t, "us-east-1", getNestedProperty(props, `pod.labels["topology.kubernetes.io/region"]`))
+
+	// Single quotes are not a string in OTTL, so they are not one here either.
+	assert.Nil(t, getNestedProperty(props, `pod.labels['topology.kubernetes.io/region']`))
 
 	// Splitting on dots is still how an ordinary key is addressed.
 	assert.Equal(t, "checkout", getNestedProperty(props, "pod.labels.app"))
